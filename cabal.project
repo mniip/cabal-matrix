@@ -1,0 +1,6 @@
+packages:
+  .
+
+constraints:
+  , utf8-string >= 0.3.1
+  , vty-crossplatform >= 0.2.0.0
