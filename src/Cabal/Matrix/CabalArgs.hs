@@ -18,6 +18,7 @@ import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import GHC.Generics
+import System.FilePath
 
 
 -- | Cabal allows interrupting the build process at multiple points, which is
@@ -146,7 +147,8 @@ argsToRaw CabalArgs{..} = CabalRawArgs
 -- TODO: there probably needs to be some mechanism to clean up these at some
 -- point.
 buildDirFor :: Flavor -> FilePath
-buildDirFor f = ".dist-cabal-matrix-" <> show (fromIntegral @Int @Word $ hash f)
+buildDirFor f = "dist-newstyle" </>
+  ("cabal-matrix-" <> show (fromIntegral @Int @Word $ hash f))
 
 renderCabalArgs :: CabalArgs -> NonEmpty Text
 renderCabalArgs = renderRawCabalArgs . argsToRaw
