@@ -20,7 +20,7 @@ cabal-matrix -j1 --compiler ghc-9.6.7,ghc-9.8.4 [target]
 This will present you with a table that you can navigate using the TUI
 keybindings at the bottom of the screen.
 
-If your package builds on e.g. `text` and `bytestring` you can get a more
+If your package depends on e.g. `text` and `bytestring` you can get a more
 exciting build matrix with:
 ```sh
 cabal-matrix -j1 --package text=2.0,2.1,2.1.3 --times --package bytestring=0.10.0.0,0.11.0.0,0.12.0.0,0.12.2.0
@@ -56,7 +56,7 @@ ghc-9.6.7 │build ok   build ok   build ok   no plan    no plan    no plan    b
 ghc-9.8.4 │no plan    build ok   build ok   no plan    no plan    no plan    build ok  
 ```
 
-You can use `x` to reconfigure the axes for a more convenient view:
+You can press `x` and reconfigure the axes for a more convenient view:
 ```
 COMPILER        │ghc-9.6.7  ghc-9.8.4 
 ────────────────┼─────────────────────
