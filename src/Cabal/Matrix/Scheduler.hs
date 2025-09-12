@@ -20,8 +20,10 @@ module Cabal.Matrix.Scheduler
 import Cabal.Matrix.CabalArgs
 import Cabal.Matrix.ProcessRunner
 import Control.Concurrent
+import Control.Exception.Safe
 import Control.Monad
 import Data.ByteString (ByteString)
+import Data.Foldable
 import Data.List
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -29,6 +31,7 @@ import Data.Primitive
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
+import System.Directory
 import System.Exit
 
 
@@ -38,6 +41,7 @@ data SchedulerInput = SchedulerInput
   , options :: [Text]
     -- ^ Options to use in all builds.
   , targets :: [Text]
+  , mode :: CabalMode
   , steps :: PerCabalStep Bool
     -- ^ Which build steps to run or skip.
   , flavors :: Array Flavor
@@ -93,6 +97,7 @@ data SchedulerState = SchedulerState
 mkCabalArgs :: SchedulerInput -> CabalStep -> FlavorIndex -> CabalArgs
 mkCabalArgs input step flavorIndex = CabalArgs
   { step
+  , mode = input.mode
   , options = input.options
   , targets = input.targets
   , flavor = indexArray input.flavors flavorIndex
@@ -141,7 +146,9 @@ startScheduler input cb = do
         stdoutClosed <- newEmptyMVar
         stderrClosed <- newEmptyMVar
         cb OnStepStarted { flavorIndex, step }
-        startProcess (renderCabalArgs $ mkCabalArgs input step flavorIndex)
+        let args = mkCabalArgs input step flavorIndex
+        for_ (environmentFilePath args) $ void . try @_ @IOError . removeFile
+        startProcess (renderCabalArgs args)
           (reactStep flavorIndex step nextSteps stdoutClosed stderrClosed)
 
     reactStep

@@ -25,6 +25,7 @@ data RecordOptions = RecordOptions
   , targets :: [Text]
   , steps :: PerCabalStep Bool
   , matrixExpr :: MatrixExpr
+  , mode :: CabalMode
   }
 
 recordParser :: ParserInfo RecordOptions
@@ -36,6 +37,10 @@ recordParser = info (options <**> helper) mempty
       <*> targetsOptions
       <*> stepsOptions
       <*> frameOptions
+      <*> modeOption
+    modeOption = flag ProjectBuild InstallLib (long "install-lib"
+      <> help "Use cabal install --lib instead of cabal build, allowing \
+        \targeting libraries directly from hackage, without a local project")
     jobsOption = option auto (long "jobs" <> short 'j'
       <> help "How many instances of cabal to run concurrently")
     optionsOptions = many $ option str (long "option" <> metavar "--OPTION"

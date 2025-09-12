@@ -7,8 +7,10 @@ module Cabal.Matrix.CabalArgs
   , tabulateCabalStep'
   , modifyCabalStep
   , setCabalStep
+  , CabalMode(..)
   , Flavor(..)
   , renderCabalArgs
+  , environmentFilePath
   ) where
 
 import Data.Hashable
@@ -80,6 +82,15 @@ setCabalStep step value pcs = case step of
   OnlyDependencies -> pcs { onlyDependencies = value }
   FullBuild -> pcs { fullBuild = value }
 
+-- | In either case if we are in a cabal project then we can only install
+-- packages that are in the dependency closure of the project, and they will be
+-- subject to constraints defined in the project file, if any.
+data CabalMode
+  = ProjectBuild -- | Assume that we're in a cabal project and run @cabal build@
+    -- targeting the project's packages and their dependencies.
+  | InstallLib -- | Use @cabal install --lib@, which doesn't require to be in a
+    -- cabal project. If we are in a project, the project's packages will be
+    -- sdisted first.
 
 -- | Options defining what cell in the build matrix we're in.
 data Flavor = Flavor
@@ -103,7 +114,8 @@ instance Monoid Flavor where
 
 -- | A single invocation of @cabal@.
 data CabalArgs = CabalArgs
-  { step :: CabalStep
+  { mode :: CabalMode
+  , step :: CabalStep
   , options :: [Text]
   , targets :: [Text]
   , flavor :: Flavor
@@ -113,6 +125,12 @@ data CabalRawArgs = CabalRawArgs
   { buildDir :: FilePath
     -- ^ @--builddir@, where build artifacts will be placed. Different
     -- flavors using the same compiler must use different 'buildDir'.
+  , mode :: CabalMode
+  , envFile :: Maybe FilePath
+    -- ^ An environment file to use with @install --lib@. The file needs to not
+    -- yet exist, so that its contents don't conflict with the install plan, but
+    -- running cabal will bring this file into existence. So we basically have
+    -- to remove this file every time.
   , step :: CabalStep
   , options :: [Text]
   , targets :: [Text]
@@ -120,7 +138,12 @@ data CabalRawArgs = CabalRawArgs
 
 renderRawCabalArgs :: CabalRawArgs -> NonEmpty Text
 renderRawCabalArgs ca = "cabal" :| mconcat
-  [ ["build"]
+  [ case ca.mode of
+    ProjectBuild -> ["build"]
+    InstallLib -> ["install", "--lib"]
+  , case ca.envFile of
+    Nothing -> []
+    Just path -> ["--package-env", Text.pack path]
   , ["--builddir", Text.pack ca.buildDir]
   , case ca.step of
     DryRun -> ["--dry-run"]
@@ -133,8 +156,10 @@ renderRawCabalArgs ca = "cabal" :| mconcat
   ]
 
 argsToRaw :: CabalArgs -> CabalRawArgs
-argsToRaw CabalArgs{..} = CabalRawArgs
+argsToRaw args@CabalArgs{..} = CabalRawArgs
   { buildDir = buildDirFor flavor
+  , mode
+  , envFile = environmentFilePath args
   , step
   , options = concat
     [ options
@@ -152,3 +177,8 @@ buildDirFor f = "dist-newstyle" </>
 
 renderCabalArgs :: CabalArgs -> NonEmpty Text
 renderCabalArgs = renderRawCabalArgs . argsToRaw
+
+environmentFilePath :: CabalArgs -> Maybe FilePath
+environmentFilePath CabalArgs{..} = case mode of
+  ProjectBuild -> Nothing
+  InstallLib -> Just $ buildDirFor flavor </> "env"
