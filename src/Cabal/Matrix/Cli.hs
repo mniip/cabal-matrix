@@ -14,6 +14,9 @@ import Data.List.Split
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Traversable
+import Distribution.Package
+import Distribution.Parsec
+import Distribution.Version
 import Options.Applicative
 import Options.Applicative.Help.Pretty
 import Options.Applicative.Types
@@ -189,8 +192,12 @@ readPrefer = commaSeparated $ maybeReader \(map toLower . strip -> s) -> if
 
 readPackage :: ReadM (PackageName, [Version])
 readPackage = byEquals
-  (PackageName . Text.strip <$> str)
-  (commaSeparated (Version . Text.strip <$> str))
+  (mkPackageName . strip <$> str)
+  (commaSeparated version)
+  where
+    version = ReadM $ ReaderT \s -> case eitherParsec @Version s of
+      Left err -> throwE $ ErrorMsg $ "Expected a version: " <> err
+      Right ver -> pure ver
 
 readCustom :: ReadM (Text, [Text])
 readCustom = byEquals

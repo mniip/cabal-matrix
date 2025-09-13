@@ -6,6 +6,9 @@ import Cabal.Matrix.Rectangle qualified as Rectangle
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Distribution.Package
+import Distribution.Pretty
+import Distribution.Version
 
 
 -- | A build matrix is represented by a rectangle, where properties that we
@@ -62,23 +65,18 @@ preferMatrix values = Rectangle.vertical "PREFER"
   | value <- values
   ]
 
-newtype PackageName = PackageName Text
-  deriving newtype (Show)
-
-newtype Version = Version Text
-  deriving newtype (Show)
-
 packageVersionMatrix :: PackageName -> [Version] -> Matrix
-packageVersionMatrix (PackageName package) versions = Rectangle.vertical package
-  [ ( Flavor
-      { unorderedOptions = Set.singleton
-        $ "--constraint=" <> package <> "==" <> version
-      , orderedOptions = []
-      }
-    , Just version
-    )
-  | Version version <- versions
-  ]
+packageVersionMatrix (Text.pack . unPackageName -> package) versions
+  = Rectangle.vertical package
+    [ ( Flavor
+        { unorderedOptions = Set.singleton
+          $ "--constraint=" <> package <> "==" <> version
+        , orderedOptions = []
+        }
+      , Just version
+      )
+    | version <- Text.pack . prettyShow <$> versions
+    ]
 
 customUnorderedOptions :: Text -> [Text] -> Matrix
 customUnorderedOptions name options = Rectangle.vertical name
