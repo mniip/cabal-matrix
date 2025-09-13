@@ -1,5 +1,1 @@
-import Cabal.Matrix.Tui
-
-
-main :: IO ()
-main = tuiMain
+import Cabal.Matrix.Main (main)

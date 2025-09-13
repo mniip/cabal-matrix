@@ -45,6 +45,7 @@ library
   exposed-modules:
     Cabal.Matrix.CabalArgs
     Cabal.Matrix.Cli
+    Cabal.Matrix.Main
     Cabal.Matrix.Matrix
     Cabal.Matrix.ProcessRunner
     Cabal.Matrix.Rectangle

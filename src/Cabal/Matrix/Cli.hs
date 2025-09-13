@@ -19,25 +19,31 @@ import Options.Applicative.Help.Pretty
 import Options.Applicative.Types
 
 
-data CliOptions = CliOptions
-  { jobs :: Int
-  , options :: [Text]
-  , targets :: [Text]
-  , steps :: PerCabalStep Bool
-  , matrixExprOrError :: Either Text MatrixExpr
-  , mode :: CabalMode
-  }
+data CliOptions
+  = Builds
+    { jobs :: Int
+    , options :: [Text]
+    , targets :: [Text]
+    , steps :: PerCabalStep Bool
+    , matrixExprOrError :: Either Text MatrixExpr
+    , mode :: CabalMode
+    , recordTo :: Maybe FilePath
+    }
+  | Replay FilePath
 
 cliParser :: ParserInfo CliOptions
 cliParser = info (options <**> helper) mempty
   where
-    options = CliOptions
-      <$> jobsOption
-      <*> optionsOptions
-      <*> targetsOptions
-      <*> stepsOptions
-      <*> frameOptions
-      <*> modeOption
+    options
+      = (Builds
+        <$> jobsOption
+        <*> optionsOptions
+        <*> targetsOptions
+        <*> stepsOptions
+        <*> frameOptions
+        <*> modeOption
+        <*> recordOption)
+      <|> (Replay <$> replayOption)
     modeOption = flag ProjectBuild InstallLib (long "install-lib"
       <> help "Use cabal install --lib instead of cabal build, allowing \
         \targeting libraries directly from hackage, without a local project")
@@ -59,6 +65,13 @@ cliParser = info (options <**> helper) mempty
       <*> flag True False (long "no-full-build"
         <> help "Skip the normal build, where the selected targets are fully \
           \built")
+    recordOption = optional $ option str
+      (long "record" <> metavar "FILE"
+        <> help "Instead of running the TUI, do the builds and collect their \
+          \results into FILE")
+    replayOption = option str
+      (long "from-recording" <> metavar "FILE"
+        <> help "View the results from FILE previously collected by --record")
 
 data MatrixOption
   = OpenParen

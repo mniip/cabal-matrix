@@ -1,10 +1,13 @@
 module Cabal.Matrix.Tui
-  ( tuiMain
+  ( TuiLiveArgs(..)
+  , tuiLive
+  , tuiRecording
   ) where
 
 import Cabal.Matrix.CabalArgs
-import Cabal.Matrix.Cli
 import Cabal.Matrix.Matrix
+import Cabal.Matrix.RecordResult
+import Cabal.Matrix.Rectangle (Rectangle)
 import Cabal.Matrix.Rectangle qualified as Rectangle
 import Cabal.Matrix.Scheduler
 import Cabal.Matrix.Tui.Common
@@ -19,12 +22,13 @@ import Data.IntMap.Strict (IntMap)
 import Data.IntMap.Strict qualified as IntMap
 import Data.List
 import Data.List.NonEmpty (NonEmpty)
+import Data.Map.Strict qualified as Map
+import Data.Maybe
 import Data.Primitive
+import Data.Set qualified as Set
 import Data.Text (Text)
-import Data.Text qualified as Text
 import Graphics.Vty
 import Graphics.Vty.CrossPlatform
-import Options.Applicative hiding ((<|>))
 
 
 data AppState = AppState
@@ -35,13 +39,14 @@ data AppState = AppState
   , table :: TableState
   }
 
-initAppState :: Matrix -> (Flavor -> CabalStep -> NonEmpty Text) -> AppState
-initAppState matrix mkCmdline = AppState
+type TuiMatrix = Rectangle (PerCabalStep (NonEmpty Text)) Text (Maybe Text)
+
+initAppState :: TuiMatrix -> AppState
+initAppState matrix = AppState
   { headers = mkHeaderState matrix vertical
   , headerEditor = Nothing
-  , flavorStates = IntMap.fromList $ zip [0..]
-    $ map (\flavor -> initFlavorState $ tabulateCabalStep' $ mkCmdline flavor)
-    $ toList $ Rectangle.rows matrix
+  , flavorStates = IntMap.fromList
+    $ zip [0..] $ map initFlavorState $ toList $ Rectangle.rows matrix
   , openedCell = Nothing
   , table = initTableState
   }
@@ -64,7 +69,7 @@ mkTableMeta ast = TableMeta
 
 appWidget
   :: DisplayRegion
-  -> Matrix
+  -> TuiMatrix
   -> PerCabalStep Bool
   -> AppState
   -> (AppState, Image)
@@ -112,7 +117,11 @@ appWidget (width, height) matrix enabledSteps ast
       ]
 
 appHandleEvent
-  :: Matrix -> PerCabalStep Bool -> AppEvent -> AppState -> Maybe AppState
+  :: TuiMatrix
+  -> PerCabalStep Bool
+  -> AppEvent
+  -> AppState
+  -> Maybe AppState
 appHandleEvent matrix enabledSteps aev ast = case aev of
   SchedulerEvent ev@OnStepStarted{ flavorIndex } -> Just ast
     { flavorStates = IntMap.adjust (flavorHandleSchedulerEvent ev)
@@ -182,13 +191,32 @@ appKeybinds ast
     <> [("X", "axes")]
     <> tableKeybinds
 
-
 data AppEvent
   = VtyEvent Event
   | SchedulerEvent SchedulerMessage
   | AppTimerEvent TimerEvent
 
-data TuiOptions = TuiOptions
+tuiMainLoop
+  :: TuiMatrix -> AppState -> PerCabalStep Bool -> TBQueue AppEvent -> IO ()
+tuiMainLoop tuiMatrix ast0 steps queue = do
+  vty <- mkVty defaultConfig
+
+  _ <- forkIO $ forever do
+    atomically . writeTBQueue queue . VtyEvent =<< vty.nextEvent
+
+  let
+    go !ast = do
+      bounds <- vty.outputIface.displayBounds
+      let (!ast', !image) = appWidget bounds tuiMatrix steps ast
+      vty.update $ picForImage image
+      ev <- atomically $ readTBQueue queue
+      case appHandleEvent tuiMatrix steps ev ast' of
+        Just ast'' -> go ast''
+        Nothing -> vty.shutdown
+
+  go ast0
+
+data TuiLiveArgs = TuiLiveArgs
   { jobs :: Int
   , options :: [Text]
   , targets :: [Text]
@@ -197,44 +225,75 @@ data TuiOptions = TuiOptions
   , mode :: CabalMode
   }
 
-tui :: TuiOptions -> IO ()
-tui TuiOptions{..} = do
-  let
-    !matrix = evalMatrixExpr matrixExpr
-    !flavors = Rectangle.rows matrix
+tuiMatrixLive :: TuiLiveArgs -> Matrix -> TuiMatrix
+tuiMatrixLive TuiLiveArgs{..}
+  = Rectangle.mapRows \flavor -> tabulateCabalStep' \step
+    -> renderCabalArgs CabalArgs{..}
 
-  vty <- mkVty defaultConfig
+schedulerInputLive :: TuiLiveArgs -> Array Flavor -> SchedulerInput
+schedulerInputLive TuiLiveArgs{..} flavors = SchedulerInput{..}
+
+tuiLive :: TuiLiveArgs -> IO ()
+tuiLive args = do
+  let
+    !matrix = evalMatrixExpr args.matrixExpr
+    !tuiMatrix = tuiMatrixLive args matrix
+    !flavors = Rectangle.rows matrix
 
   queue <- newTBQueueIO 1
   _ <- forkIO $ forever do
-    atomically . writeTBQueue queue . VtyEvent =<< vty.nextEvent
-  _ <- forkIO $ forever do
     threadDelay 100000
     atomically . writeTBQueue queue . AppTimerEvent $ TimerEvent
-  _hdl <- startScheduler SchedulerInput{..}
+  _hdl <- startScheduler (schedulerInputLive args flavors)
     (atomically . writeTBQueue queue . SchedulerEvent)
 
-  let
-    go !ast = do
-      bounds <- vty.outputIface.displayBounds
-      let (!ast', !image) = appWidget bounds matrix steps ast
-      vty.update $ picForImage image
-      ev <- atomically $ readTBQueue queue
-      case appHandleEvent matrix steps ev ast' of
-        Just ast'' -> go ast''
-        Nothing -> vty.shutdown
-
-  go $ initAppState matrix \flavor step -> renderCabalArgs CabalArgs{..}
+  tuiMainLoop tuiMatrix (initAppState tuiMatrix) args.steps queue
 
   -- TODO: should probably kill the processes in _hdl
 
-tuiMain :: IO ()
-tuiMain = do
-  cliOptions <- execParser cliParser
-  options <- case cliOptions of
-    CliOptions { matrixExprOrError = Right matrixExpr, .. }
-      -> pure TuiOptions{..}
-    CliOptions { matrixExprOrError = Left err }
-      -> handleParseResult $ Failure $ parserFailure defaultPrefs cliParser
-        (ErrorMsg $ Text.unpack err) mempty
-  tui options
+tuiMatrixRecording :: RecordResult -> TuiMatrix
+tuiMatrixRecording (RecordResult results) = matrix
+  where
+    !cols = Set.toList $ Set.unions
+      [ Map.keysSet result.flavor
+      | result <- results
+      ]
+    !matrix = Rectangle.fromRowMajor cols
+      [ ( tabulateCabalStep' \step -> cmdline result step
+        , [Map.lookup col result.flavor | col <- cols]
+        )
+      | result <- results
+      ]
+    cmdline result = \case
+      DryRun -> maybe noCmdline (.cmdline) result.dryRun
+      OnlyDownload -> maybe noCmdline (.cmdline) result.onlyDownload
+      OnlyDependencies -> maybe noCmdline (.cmdline) result.onlyDependencies
+      FullBuild -> maybe noCmdline (.cmdline) result.fullBuild
+    noCmdline = pure "" -- TODO: better representation?
+
+addOutputFromRecording :: RecordResult -> AppState -> AppState
+addOutputFromRecording (RecordResult results) ast = ast
+  { flavorStates = foldl'
+    (\im (i, result) -> IntMap.adjust (flavorFromRecording result) i im)
+    ast.flavorStates
+    (zip [0..] results)
+  }
+
+stepsRecording :: RecordResult -> PerCabalStep Bool
+stepsRecording (RecordResult results) = tabulateCabalStep' \case
+  DryRun -> any (isJust . (.dryRun)) results
+  OnlyDownload -> any (isJust . (.onlyDownload)) results
+  OnlyDependencies -> any (isJust . (.onlyDependencies)) results
+  FullBuild -> any (isJust . (.fullBuild)) results
+
+tuiRecording :: RecordResult -> IO ()
+tuiRecording results = do
+  let
+    !tuiMatrix = tuiMatrixRecording results
+    !steps = stepsRecording results
+
+  queue <- newTBQueueIO 1
+
+  tuiMainLoop tuiMatrix
+    (addOutputFromRecording results $ initAppState tuiMatrix)
+    steps queue

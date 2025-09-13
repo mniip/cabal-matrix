@@ -8,7 +8,6 @@ module Cabal.Matrix.Tui.Headers
   , headerEditorKeybinds
   ) where
 
-import Cabal.Matrix.Matrix
 import Cabal.Matrix.Rectangle (Rectangle)
 import Cabal.Matrix.Rectangle qualified as Rectangle
 import Cabal.Matrix.Tui.Common
@@ -28,7 +27,7 @@ data HeaderState = HeaderState
   , gridToFlavor :: Rectangle () () (Maybe Int)
   }
 
-mkHeaderState :: Matrix -> Array Bool -> HeaderState
+mkHeaderState :: Rectangle flavor Text (Maybe Text) -> Array Bool -> HeaderState
 mkHeaderState matrix vertical = HeaderState{..}
   where
     (horizontalHeader, verticalHeader, gridToFlavor)
@@ -47,7 +46,7 @@ initHeaderEditorState = HeaderEditorState
 
 headerEditorWidget
   :: DisplayRegion
-  -> Matrix
+  -> Rectangle flavor Text (Maybe Text)
   -> HeaderState
   -> HeaderEditorState
   -> (HeaderEditorState, Image)
@@ -73,7 +72,7 @@ headerEditorWidget (_, height) matrix hs hes =
     scroll' = clamp (hes.index - height + 2) (hes.index - 1) hes.scroll
 
 headerEditorHandleEvent
-  :: Matrix
+  :: Rectangle flavor Text (Maybe Text)
   -> Event
   -> (HeaderEditorState, HeaderState)
   -> (HeaderEditorState, HeaderState)

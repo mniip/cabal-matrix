@@ -1,10 +1,9 @@
 module Cabal.Matrix.Record
-  ( RecordOptions(..)
-  , recordMain
+  ( RecordArgs(..)
+  , record
   ) where
 
 import Cabal.Matrix.CabalArgs
-import Cabal.Matrix.Cli
 import Cabal.Matrix.Matrix
 import Cabal.Matrix.ProcessRunner
 import Cabal.Matrix.RecordResult
@@ -12,9 +11,7 @@ import Cabal.Matrix.Rectangle qualified as Rectangle
 import Cabal.Matrix.Scheduler
 import Control.Concurrent
 import Control.Monad
-import Data.Aeson qualified as Aeson
 import Data.ByteString (ByteString)
-import Data.ByteString.Lazy.Char8 qualified as LazyByteString8
 import Data.Foldable
 import Data.Function
 import Data.IORef
@@ -25,9 +22,7 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe
 import Data.Primitive
 import Data.Text (Text)
-import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
-import Options.Applicative
 import System.Exit
 
 
@@ -69,7 +64,7 @@ collapseOutput :: [(OutputChannel, ByteString)] -> [(OutputChannel, ByteString)]
 collapseOutput = map (\grp -> (fst $ NonEmpty.head grp, foldMap snd grp))
   . NonEmpty.groupBy ((==) `on` fst)
 
-data RecordOptions = RecordOptions
+data RecordArgs = RecordArgs
   { jobs :: Int
   , options :: [Text]
   , targets :: [Text]
@@ -78,8 +73,8 @@ data RecordOptions = RecordOptions
   , mode :: CabalMode
   }
 
-record :: RecordOptions -> IO RecordResult
-record RecordOptions{..} = do
+record :: RecordArgs -> IO RecordResult
+record RecordArgs{..} = do
   let
     !matrix = evalMatrixExpr matrixExpr
     !flavors = Rectangle.rows matrix
@@ -117,15 +112,3 @@ record RecordOptions{..} = do
   frozenResults <- traverseArrayP (traverse readIORef) results
   pure $ RecordResult
     $ zipWith mkFlavorResult (toList statics) (toList frozenResults)
-
-recordMain :: IO ()
-recordMain = do
-  cliOptions <- execParser cliParser
-  options <- case cliOptions of
-    CliOptions { matrixExprOrError = Right matrixExpr, .. }
-      -> pure RecordOptions{..}
-    CliOptions { matrixExprOrError = Left err }
-      -> handleParseResult $ Failure $ parserFailure defaultPrefs cliParser
-        (ErrorMsg $ Text.unpack err) mempty
-  result <- record options
-  LazyByteString8.putStrLn $ Aeson.encode result

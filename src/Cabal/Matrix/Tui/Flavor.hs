@@ -1,6 +1,7 @@
 module Cabal.Matrix.Tui.Flavor
   ( FlavorState
   , initFlavorState
+  , flavorFromRecording
   , TimerEvent(..)
   , flavorHandleTimerEvent
   , flavorHandleSchedulerEvent
@@ -16,8 +17,10 @@ module Cabal.Matrix.Tui.Flavor
 
 import Cabal.Matrix.CabalArgs
 import Cabal.Matrix.ProcessRunner
+import Cabal.Matrix.RecordResult
 import Cabal.Matrix.Scheduler
 import Cabal.Matrix.Tui.Common
+import Data.Bifunctor
 import Data.ByteString (ByteString)
 import Data.Function
 import Data.List
@@ -48,6 +51,15 @@ initStepState cmdline = StepState
   , lastTickOutputCount = 0
   , outputCount = 0
   , exit = Nothing
+  }
+
+stepFromRecording :: StepResult -> StepState -> StepState
+stepFromRecording result ss = ss
+  { started = True
+  , revOutput = reverse $ second Text.encodeUtf8 <$> result.output
+  , exit = Just case result.exitCode of
+    0 -> ExitSuccess
+    code -> ExitFailure code
   }
 
 statusColor :: StepState -> Color
@@ -114,8 +126,20 @@ stepHandleTimerEvent ev ss = case ev of
 
 type FlavorState = PerCabalStep StepState
 
-initFlavorState :: PerCabalStep (NonEmpty Text) -> PerCabalStep StepState
+initFlavorState :: PerCabalStep (NonEmpty Text) -> FlavorState
 initFlavorState = fmap initStepState
+
+flavorFromRecording :: FlavorResult -> FlavorState -> FlavorState
+flavorFromRecording result fs = PerCabalStep
+  { dryRun
+    = maybe id stepFromRecording result.dryRun fs.dryRun
+  , onlyDownload
+    = maybe id stepFromRecording result.onlyDownload fs.onlyDownload
+  , onlyDependencies
+    = maybe id stepFromRecording result.onlyDependencies fs.onlyDependencies
+  , fullBuild
+    = maybe id stepFromRecording result.fullBuild fs.fullBuild
+  }
 
 flavorHandleSchedulerEvent :: SchedulerMessage -> FlavorState -> FlavorState
 flavorHandleSchedulerEvent ev fs = case ev of

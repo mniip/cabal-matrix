@@ -4,6 +4,7 @@ module Cabal.Matrix.Rectangle
   , rows
   , indexRow
   , toRowMajor
+  , fromRowMajor
   , mapRows
   , columns
   , indexColumn
@@ -58,6 +59,21 @@ toRowMajor rect@(Rectangle rs _ _)
   = [indexRow rect y | y <- [0 .. height - 1]]
   where
     !height = sizeofArray rs
+
+fromRowMajor :: [b] -> [(a, [c])] -> Rectangle a b c
+fromRowMajor cols pairs = Rectangle rs cs cells
+  where
+    !cs = arrayFromList cols
+    !width = sizeofArray cs
+    !height = length pairs
+    !rs = arrayFromListN height $ fst <$> pairs
+    !cells = arrayFromListN (width * height)
+      [ x
+      | (_, row) <- pairs
+      , x <- if length row == width
+        then row
+        else error "fromRowMajor: incorrect row width"
+      ]
 
 mapRows :: (a -> a') -> Rectangle a b c -> Rectangle a' b c
 mapRows f (Rectangle rs cs cells) = Rectangle (mapArray' f rs) cs cells
@@ -372,4 +388,3 @@ unCartesianProduct bitmask (Rectangle rs cs cells) = runST do
     (!fcs, !tcs) = partitionByBitmaskAtOffset bitmask cs 0
     !fwidth = sizeofArray fcs
     !twidth = sizeofArray tcs
-
