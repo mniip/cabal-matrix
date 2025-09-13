@@ -133,7 +133,8 @@ frameOptions = parserOptionGroup "Specifying configurations:"
         , Expr "--package" . uncurry PackageVersionExpr <$> option readPackage
           (long "package" <> metavar "PACKAGE=VERSION1,VERSION2,..."
             <> help "Specify a comma-separated list of versions of a given \
-              \package")
+              \package. Each version can instead be a version range such as \
+              \'>=1.0 && <2.0'")
         , Expr "--prefer" . PreferExpr <$> option readPrefer
           (long "prefer" <> metavar "[newest],[oldest]"
             <> help "Specify whether to try newest or oldest versions of \
@@ -190,14 +191,17 @@ readPrefer = commaSeparated $ maybeReader \(map toLower . strip -> s) -> if
   | s `elem` ["oldest", "older", "old"] -> Just PreferOldest
   | otherwise -> Nothing
 
-readPackage :: ReadM (PackageName, [Version])
+readPackage :: ReadM (PackageName, [Either Version VersionRange])
 readPackage = byEquals
   (mkPackageName . strip <$> str)
-  (commaSeparated version)
+  (commaSeparated versionOrRange)
   where
-    version = ReadM $ ReaderT \s -> case eitherParsec @Version s of
-      Left err -> throwE $ ErrorMsg $ "Expected a version: " <> err
-      Right ver -> pure ver
+    versionOrRange = ReadM $ ReaderT \s -> case eitherParsec @Version s of
+      Right ver -> pure $ Left ver
+      Left err1 -> case eitherParsec @VersionRange s of
+        Right range -> pure $ Right range
+        Left err2 -> throwE $ ErrorMsg $ unlines
+          ["Expected a version or a version range: ", err1, err2]
 
 readCustom :: ReadM (Text, [Text])
 readCustom = byEquals

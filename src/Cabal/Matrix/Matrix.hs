@@ -6,6 +6,7 @@ import Cabal.Matrix.Rectangle qualified as Rectangle
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Traversable
 import Distribution.Client.Config
 import Distribution.Client.GlobalFlags
 import Distribution.Client.IndexUtils
@@ -13,6 +14,7 @@ import Distribution.Client.Sandbox
 import Distribution.Client.Types.SourcePackageDb
 import Distribution.Package
 import Distribution.Pretty
+import Distribution.Solver.Types.PackageIndex qualified as PackageIndex
 import Distribution.Verbosity qualified as Verbosity
 import Distribution.Version
 
@@ -115,7 +117,7 @@ data MatrixExpr
   | UnitExpr
   | CompilersExpr [Compiler]
   | PreferExpr [Prefer]
-  | PackageVersionExpr PackageName [Version]
+  | PackageVersionExpr PackageName [Either Version VersionRange]
   | CustomUnorderedExpr Text [Text]
   | CustomOrderedExpr Text [Text]
 
@@ -148,7 +150,10 @@ evalMatrixExprM = \case
   PreferExpr values
     -> EvalPure $ preferMatrix values
   PackageVersionExpr package versions
-    -> EvalPure $ packageVersionMatrix package versions
+    -> packageVersionMatrix package . concat <$> for versions \case
+      Left version -> pure [version]
+      Right range -> EvalWithDB \db -> packageVersion
+        <$> PackageIndex.lookupDependency db.packageIndex package range
   CustomUnorderedExpr name values
     -> EvalPure $ customUnorderedOptions name values
   CustomOrderedExpr name values
