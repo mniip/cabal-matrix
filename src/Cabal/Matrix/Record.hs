@@ -75,8 +75,8 @@ data RecordArgs = RecordArgs
 
 record :: RecordArgs -> IO RecordResult
 record RecordArgs{..} = do
+  !matrix <- evalMatrixExpr matrixExpr
   let
-    !matrix = evalMatrixExpr matrixExpr
     !flavors = Rectangle.rows matrix
     !statics = arrayFromListN (sizeofArray flavors)
       [ StaticFlavorResult

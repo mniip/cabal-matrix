@@ -6,8 +6,14 @@ import Cabal.Matrix.Rectangle qualified as Rectangle
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Distribution.Client.Config
+import Distribution.Client.GlobalFlags
+import Distribution.Client.IndexUtils
+import Distribution.Client.Sandbox
+import Distribution.Client.Types.SourcePackageDb
 import Distribution.Package
 import Distribution.Pretty
+import Distribution.Verbosity qualified as Verbosity
 import Distribution.Version
 
 
@@ -113,17 +119,49 @@ data MatrixExpr
   | CustomUnorderedExpr Text [Text]
   | CustomOrderedExpr Text [Text]
 
-evalMatrixExpr :: MatrixExpr -> Matrix
-evalMatrixExpr = \case
-  TimesExpr m1 m2 -> timesMatrix (evalMatrixExpr m1) (evalMatrixExpr m2)
-  AddExpr m1 m2 -> addMatrix (evalMatrixExpr m1) (evalMatrixExpr m2)
-  SubtractExpr m1 m2 -> subtractMatrix (evalMatrixExpr m1) (evalMatrixExpr m2)
-  SeqExpr m1 m2 -> seqMatrix (evalMatrixExpr m1) (evalMatrixExpr m2)
-  UnitExpr -> unitMatrix
-  CompilersExpr compilers -> compilersMatrix compilers
-  PreferExpr values -> preferMatrix values
-  PackageVersionExpr package versions -> packageVersionMatrix package versions
-  CustomUnorderedExpr name values -> customUnorderedOptions name values
-  CustomOrderedExpr name values -> customOrderedOptions name values
+-- | Evaluating the build matrix expression may require access to the source
+-- package DB, but if it doesn't, we'd like to avoid loading it.
+data EvalM a = EvalPure a | EvalWithDB (SourcePackageDb -> a)
+  deriving stock (Functor)
 
+instance Applicative EvalM where
+  pure = EvalPure
+  EvalPure f <*> EvalPure x = EvalPure (f x)
+  EvalPure f <*> EvalWithDB x = EvalWithDB \db -> f (x db)
+  EvalWithDB f <*> EvalPure x = EvalWithDB \db -> f db x
+  EvalWithDB f <*> EvalWithDB x = EvalWithDB \db -> f db (x db)
 
+evalMatrixExprM :: MatrixExpr -> EvalM Matrix
+evalMatrixExprM = \case
+  TimesExpr m1 m2
+    -> timesMatrix <$> evalMatrixExprM m1 <*> evalMatrixExprM m2
+  AddExpr m1 m2
+    -> addMatrix <$> evalMatrixExprM m1 <*> evalMatrixExprM m2
+  SubtractExpr m1 m2
+    -> subtractMatrix <$> evalMatrixExprM m1 <*> evalMatrixExprM m2
+  SeqExpr m1 m2
+    -> seqMatrix <$> evalMatrixExprM m1 <*> evalMatrixExprM m2
+  UnitExpr
+    -> EvalPure unitMatrix
+  CompilersExpr compilers
+    -> EvalPure $ compilersMatrix compilers
+  PreferExpr values
+    -> EvalPure $ preferMatrix values
+  PackageVersionExpr package versions
+    -> EvalPure $ packageVersionMatrix package versions
+  CustomUnorderedExpr name values
+    -> EvalPure $ customUnorderedOptions name values
+  CustomOrderedExpr name values
+    -> EvalPure $ customOrderedOptions name values
+
+evalMatrixExpr :: MatrixExpr -> IO Matrix
+evalMatrixExpr expr = case evalMatrixExprM expr of
+  EvalPure matrix -> pure $! matrix
+  EvalWithDB f -> withDB \db -> pure $! f db
+  where
+    withDB :: (SourcePackageDb -> IO a) -> IO a
+    withDB k = do
+      config <- loadConfigOrSandboxConfig verbosity defaultGlobalFlags
+      withRepoContext verbosity config.savedGlobalFlags \repo -> do
+        getSourcePackages verbosity repo >>= k
+    verbosity = Verbosity.silent

@@ -235,8 +235,8 @@ schedulerInputLive TuiLiveArgs{..} flavors = SchedulerInput{..}
 
 tuiLive :: TuiLiveArgs -> IO ()
 tuiLive args = do
+  !matrix <- evalMatrixExpr args.matrixExpr
   let
-    !matrix = evalMatrixExpr args.matrixExpr
     !tuiMatrix = tuiMatrixLive args matrix
     !flavors = Rectangle.rows matrix
 
