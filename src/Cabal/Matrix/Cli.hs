@@ -1,6 +1,6 @@
 module Cabal.Matrix.Cli
-  ( RecordOptions(..)
-  , recordParser
+  ( CliOptions(..)
+  , cliParser
   ) where
 
 import Control.Applicative
@@ -19,19 +19,19 @@ import Options.Applicative.Help.Pretty
 import Options.Applicative.Types
 
 
-data RecordOptions = RecordOptions
+data CliOptions = CliOptions
   { jobs :: Int
   , options :: [Text]
   , targets :: [Text]
   , steps :: PerCabalStep Bool
-  , matrixExpr :: MatrixExpr
+  , matrixExprOrError :: Either Text MatrixExpr
   , mode :: CabalMode
   }
 
-recordParser :: ParserInfo RecordOptions
-recordParser = info (options <**> helper) mempty
+cliParser :: ParserInfo CliOptions
+cliParser = info (options <**> helper) mempty
   where
-    options = RecordOptions
+    options = CliOptions
       <$> jobsOption
       <*> optionsOptions
       <*> targetsOptions
@@ -63,75 +63,94 @@ recordParser = info (options <**> helper) mempty
 data MatrixOption
   = OpenParen
   | CloseParen
-  | Expr MatrixExpr
-  | BinOp (MatrixExpr -> MatrixExpr -> MatrixExpr)
+  | Expr Text MatrixExpr
+  | BinOp Text (MatrixExpr -> MatrixExpr -> MatrixExpr)
 
-unflatten :: [MatrixOption] -> Maybe MatrixExpr
-unflatten input = case runStateT term input of
-  Just (output, []) -> Just output
-  _ -> Nothing
+unflatten :: [MatrixOption] -> Either Text MatrixExpr
+unflatten input = case runStateT (term False) input of
+  Left err -> Left err
+  Right (output, []) -> Right output
+  Right (_, CloseParen:_) -> Left "More closing parens than open"
+  Right (_, opt:_) -> Left $ "Unexpected " <> describe opt <> " at end of input"
   where
-    term = atom >>= termSuffix
-    termSuffix e = ((binOp <*> pure e <*> atom) >>= termSuffix) <|> pure e
-    atom = (openParen *> term <* closeParen) <|> expr
-    openParen = StateT \case
-      OpenParen:xs -> Just ((), xs)
-      _ -> Nothing
-    closeParen = StateT \case
-      CloseParen:xs -> Just ((), xs)
-      _ -> Nothing
-    expr = StateT \case
-      Expr e:xs -> Just (e, xs)
-      _ -> Nothing
-    binOp = StateT \case
-      BinOp b:xs -> Just (b, xs)
-      _ -> Nothing
+    term paren = atom >>= termSuffix paren
+    termSuffix paren e = StateT \case
+      BinOp _ b:xs -> do
+        (e', xs') <- runStateT atom xs
+        runStateT (termSuffix paren (b e e')) xs'
+      xs@(CloseParen:_) -> pure (e, xs)
+      xs@[] -> pure (e, xs)
+      opt:_ -> Left $ "Expected " <> describeBinOp
+        <> (if paren then ", " <> describe CloseParen <> ", " else " ")
+        <> "or end of input after list expression, got " <> describe opt
+    atom = StateT \case
+      OpenParen:xs -> do
+        (e, xs') <- runStateT (term True) xs
+        case xs' of
+          CloseParen:xs'' -> pure (e, xs'')
+          [] -> Left "More open parens than closing parens"
+          opt:_ -> Left
+            $ "Unexpected " <> describe opt <> " after list expression"
+      Expr _ e:xs -> pure (e, xs)
+      opt:_ -> Left $ "Expecting " <> describeExpr <> " or "
+        <> describe OpenParen <> ", got " <> describe opt
+      [] -> Left $ "Expecting " <> describeExpr <> " or "
+        <> describe OpenParen <> ", got end of input"
+  
+    describe = \case
+      OpenParen -> "open paren (--[)"
+      CloseParen -> "closing paren (--])"
+      Expr name _ -> "list option (" <> name <> ")"
+      BinOp name _ -> "binary operator option (" <> name <> ")"
+    describeExpr = "list option (--compiler, --package, etc)"
+    describeBinOp = "binary operator option (--times, --add, etc)"
 
-frameOptions :: Parser MatrixExpr
-frameOptions = parserOptionGroup "Specifying configurations:" $ fromM do
-  options <- oneM $ many frameOption
-  maybe (oneM Control.Applicative.empty) pure $ unflatten options
+frameOptions :: Parser (Either Text MatrixExpr)
+frameOptions = parserOptionGroup "Specifying configurations:"
+  $ unflatten <$> many frameOption
   where
     frameOption = asum
-      [ Expr <$> asum
-        [ CompilersExpr <$> option readCompilers
+      [ asum
+        [ Expr "--compiler" . CompilersExpr <$> option readCompilers
           (long "compiler" <> short 'w' <> metavar "COMPILER1,COMPILER2,..."
             <> help "Specify a comma-separated list of compilers")
-        , uncurry PackageVersionExpr <$> option readPackage
+        , Expr "--package" . uncurry PackageVersionExpr <$> option readPackage
           (long "package" <> metavar "PACKAGE=VERSION1,VERSION2,..."
             <> help "Specify a comma-separated list of versions of a given \
               \package")
-        , PreferExpr <$> option readPrefer
+        , Expr "--prefer" . PreferExpr <$> option readPrefer
           (long "prefer" <> metavar "[newest],[oldest]"
             <> help "Specify whether to try newest or oldest versions of \
               \packages, or both")
         ]
-      , BinOp <$> asum
-        [ flag' TimesExpr
+      , asum
+        [ flag' (BinOp "--times" TimesExpr)
           (long "times" <> style (\doc -> "LIST" <+> doc <+> "LIST")
             <> help "Take the cartesian product of two lists")
-        , flag' AddExpr
+        , flag' (BinOp "--add" AddExpr)
           (long "add" <> style (\doc -> "LIST" <+> doc <+> "LIST")
             <> help "Append the two lists, merging common fields")
-        , flag' SubtractExpr
+        , flag' (BinOp "--subtract" SubtractExpr)
           (long "subtract" <> style (\doc -> "LIST" <+> doc <+> "LIST")
             <> help "Remove from the first list everything that is covered by \
               \the second list")
-        , flag' SeqExpr
+        , flag' (BinOp "--seq" SeqExpr)
           (long "seq" <> style (\doc -> "LIST" <+> doc <+> "LIST")
             <> help "Append the two lists, appending columns even if common")
         ]
-      , Expr <$> asum
-        [ flag' UnitExpr
+      , asum
+        [ flag' (Expr "--default" UnitExpr)
           (long "default"
             <> help "A single build without any additional options")
-        , uncurry CustomUnorderedExpr <$> option readCustom
+        , Expr "--custom-options" . uncurry CustomUnorderedExpr
+          <$> option readCustom
           (long "custom-options" <> metavar "NAME=--opt1,--opt2,..."
             <> help "A single build with the provided options. NAME is the \
               \field name, which defines how this build is categorized in the \
               \matrix. --add'ing multiple --custom-options with the same NAME \
               \can be used to create a list.")
-        , uncurry CustomOrderedExpr <$> option readCustom
+        , Expr "--custom-ordered-options" . uncurry CustomOrderedExpr
+          <$> option readCustom
           (long "custom-ordered-options" <> metavar "NAME=--opt1,--opt2,..."
             <> help "A single build with the provided options, for options \
               \are order-sensitive. The provided options are appended after \

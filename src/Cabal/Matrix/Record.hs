@@ -1,5 +1,6 @@
 module Cabal.Matrix.Record
-  ( recordMain
+  ( RecordOptions(..)
+  , recordMain
   ) where
 
 import Cabal.Matrix.CabalArgs
@@ -24,6 +25,7 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe
 import Data.Primitive
 import Data.Text (Text)
+import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
 import Options.Applicative
 import System.Exit
@@ -67,6 +69,15 @@ collapseOutput :: [(OutputChannel, ByteString)] -> [(OutputChannel, ByteString)]
 collapseOutput = map (\grp -> (fst $ NonEmpty.head grp, foldMap snd grp))
   . NonEmpty.groupBy ((==) `on` fst)
 
+data RecordOptions = RecordOptions
+  { jobs :: Int
+  , options :: [Text]
+  , targets :: [Text]
+  , steps :: PerCabalStep Bool
+  , matrixExpr :: MatrixExpr
+  , mode :: CabalMode
+  }
+
 record :: RecordOptions -> IO RecordResult
 record RecordOptions{..} = do
   let
@@ -109,6 +120,12 @@ record RecordOptions{..} = do
 
 recordMain :: IO ()
 recordMain = do
-  options <- execParser recordParser
+  cliOptions <- execParser cliParser
+  options <- case cliOptions of
+    CliOptions { matrixExprOrError = Right matrixExpr, .. }
+      -> pure RecordOptions{..}
+    CliOptions { matrixExprOrError = Left err }
+      -> handleParseResult $ Failure $ parserFailure defaultPrefs cliParser
+        (ErrorMsg $ Text.unpack err) mempty
   result <- record options
   LazyByteString8.putStrLn $ Aeson.encode result

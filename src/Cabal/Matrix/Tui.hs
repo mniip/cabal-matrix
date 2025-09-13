@@ -21,9 +21,10 @@ import Data.List
 import Data.List.NonEmpty (NonEmpty)
 import Data.Primitive
 import Data.Text (Text)
+import Data.Text qualified as Text
 import Graphics.Vty
 import Graphics.Vty.CrossPlatform
-import Options.Applicative (execParser)
+import Options.Applicative hiding ((<|>))
 
 
 data AppState = AppState
@@ -187,8 +188,17 @@ data AppEvent
   | SchedulerEvent SchedulerMessage
   | AppTimerEvent TimerEvent
 
-tui :: RecordOptions -> IO ()
-tui RecordOptions{..} = do
+data TuiOptions = TuiOptions
+  { jobs :: Int
+  , options :: [Text]
+  , targets :: [Text]
+  , steps :: PerCabalStep Bool
+  , matrixExpr :: MatrixExpr
+  , mode :: CabalMode
+  }
+
+tui :: TuiOptions -> IO ()
+tui TuiOptions{..} = do
   let
     !matrix = evalMatrixExpr matrixExpr
     !flavors = Rectangle.rows matrix
@@ -220,5 +230,11 @@ tui RecordOptions{..} = do
 
 tuiMain :: IO ()
 tuiMain = do
-  options <- execParser recordParser
+  cliOptions <- execParser cliParser
+  options <- case cliOptions of
+    CliOptions { matrixExprOrError = Right matrixExpr, .. }
+      -> pure TuiOptions{..}
+    CliOptions { matrixExprOrError = Left err }
+      -> handleParseResult $ Failure $ parserFailure defaultPrefs cliParser
+        (ErrorMsg $ Text.unpack err) mempty
   tui options
