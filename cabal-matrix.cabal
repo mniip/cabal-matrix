@@ -22,28 +22,28 @@ common common
 library
   import:          common
   build-depends:
-    , aeson >=2.0 && <2.3
-    , base >=4.16 && <4.22
-    , bytestring >=0.11 && <0.13
-    , Cabal >=3.8 && <3.17
-    , cabal-install >=3.8 && <3.17
-    , cabal-install-solver >=3.8 && <3.17
-    , Cabal-syntax >=3.8 && <3.17
-    , containers >=0.6 && <0.9
-    , directory >=1.3 && <1.4
-    , filepath >=1.3 && <1.6
-    , hashable >=1.3 && <1.6
-    , optparse-applicative >=0.19.0.0 && <0.20
-    , primitive >=0.7 && <0.10
-    , process >=1.6 && <1.7
-    , safe-exceptions >=0.1 && <0.2
-    , split >= 0.1 && <0.3
-    , stm >=2.5 && <2.6
-    , text >=2.0 && <2.2
-    , transformers >=0.5 && <0.7
-    , vty >=6.0 && < 6.5
-    , vty-crossplatform >=0.1 && <0.5
-    , word-wrap >=0.3 && <0.6
+    , aeson                 >=2.0      && <2.3
+    , base                  >=4.16     && <4.22
+    , bytestring            >=0.11     && <0.13
+    , Cabal                 >=3.8      && <3.17
+    , cabal-install         >=3.8      && <3.17
+    , cabal-install-solver  >=3.8      && <3.17
+    , Cabal-syntax          >=3.8      && <3.17
+    , containers            >=0.6      && <0.9
+    , directory             >=1.3      && <1.4
+    , filepath              >=1.3      && <1.6
+    , hashable              >=1.3      && <1.6
+    , optparse-applicative  >=0.19.0.0 && <0.20
+    , primitive             >=0.7      && <0.10
+    , process               >=1.6      && <1.7
+    , safe-exceptions       >=0.1      && <0.2
+    , split                 >=0.1      && <0.3
+    , stm                   >=2.5      && <2.6
+    , text                  >=2.0      && <2.2
+    , transformers          >=0.5      && <0.7
+    , vty                   >=6.0      && <6.5
+    , vty-crossplatform     >=0.1      && <0.5
+    , word-wrap             >=0.3      && <0.6
 
   hs-source-dirs:  src
   exposed-modules:
@@ -52,15 +52,15 @@ library
     Cabal.Matrix.Main
     Cabal.Matrix.Matrix
     Cabal.Matrix.ProcessRunner
-    Cabal.Matrix.Rectangle
     Cabal.Matrix.Record
     Cabal.Matrix.RecordResult
+    Cabal.Matrix.Rectangle
     Cabal.Matrix.Scheduler
     Cabal.Matrix.Tui
+    Cabal.Matrix.Tui.Common
     Cabal.Matrix.Tui.Flavor
     Cabal.Matrix.Tui.Headers
     Cabal.Matrix.Tui.Table
-    Cabal.Matrix.Tui.Common
 
 executable cabal-matrix
   import:         common
@@ -70,7 +70,6 @@ executable cabal-matrix
 
   -- -threaded is required so that waiting for child processes does not block
   -- the RTS
-  ghc-options: -threaded
-
+  ghc-options:    -threaded
   hs-source-dirs: app
   main-is:        Main.hs
