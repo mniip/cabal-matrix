@@ -85,10 +85,14 @@ headerEditorHandleEvent matrix ev (hes, hs) = case ev of
     ( hes { index = clamp 0 (sizeofArray hs.vertical - 1) $ succ hes.index }
     , hs
     )
-  EvKey (KChar ' ') _ | hes.index < sizeofArray hs.vertical
+  EvKey (isToggleKey -> True) _ | hes.index < sizeofArray hs.vertical
     -> (hes, mkHeaderState matrix $ toggleArray hes.index hs.vertical)
   _ -> (hes, hs)
   where
+    isToggleKey = \case
+      KChar ' ' -> True
+      KEnter -> True
+      _ -> False
     toggleArray i arr = runArray do
       m <- thawArray arr 0 (sizeofArray arr)
       writeArray m i . not =<< readArray m i
@@ -97,5 +101,5 @@ headerEditorHandleEvent matrix ev (hes, hs) = case ev of
 headerEditorKeybinds :: [(Text, Text)]
 headerEditorKeybinds =
   [ (Text.pack [triangleN, triangleS], "select field")
-  , ("<Space>", "toggle vertical/horizontal axis")
+  , ("<Enter>/<Space>", "toggle vertical/horizontal axis")
   ]

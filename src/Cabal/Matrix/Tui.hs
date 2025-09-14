@@ -138,7 +138,7 @@ appHandleEvent matrix enabledSteps aev ast = case aev of
   SchedulerEvent OnDone -> Just ast
   AppTimerEvent ev -> Just ast
     { flavorStates = IntMap.map (flavorHandleTimerEvent ev) ast.flavorStates }
-  VtyEvent (EvKey KEsc _)
+  VtyEvent (EvKey (isExitKey -> True) _)
     | Just _ <- ast.openedCell
     -> Just ast { openedCell = Nothing }
     | Just _ <- ast.headerEditor
@@ -155,7 +155,7 @@ appHandleEvent matrix enabledSteps aev ast = case aev of
     -> Just ast { headers = headers', headerEditor = Just headerEditor' }
   VtyEvent (EvKey (KChar 'x') _)
     -> Just ast { headerEditor = Just initHeaderEditorState }
-  VtyEvent (EvKey (KChar ' ') _)
+  VtyEvent (EvKey (isEnterKey -> True) _)
     | ast.table.activeSelection == SelectionNormal
     , ast.table.normalSelectionCol < sizeofArray
       (Rectangle.rows ast.headers.horizontalHeader)
@@ -168,13 +168,22 @@ appHandleEvent matrix enabledSteps aev ast = case aev of
     | otherwise -> Just ast
   VtyEvent ev
     -> Just ast { table = tableHandleEvent (mkTableMeta ast) ev ast.table }
+  where
+    isExitKey = \case
+      KEsc -> True
+      KChar 'q' -> True
+      _ -> False
+    isEnterKey = \case
+      KChar ' ' -> True
+      KEnter -> True
+      _ -> False
 
 appKeybinds :: AppState -> [(Text, Text)]
 appKeybinds ast
   | Just _ <- ast.openedCell
-  = [("<Esc>", "back")] <> outputKeybinds
+  = [("<Esc>/Q", "back")] <> outputKeybinds
   | Just _ <- ast.headerEditor
-  = [("<Esc>", "back")] <> headerEditorKeybinds
+  = [("<Esc>/Q", "back")] <> headerEditorKeybinds
   | otherwise
   = (if
       | ast.table.activeSelection == SelectionNormal
@@ -184,10 +193,10 @@ appKeybinds ast
         (Rectangle.rows ast.headers.verticalHeader)
       , Just _ <- Rectangle.indexCell ast.headers.gridToFlavor
         ast.table.normalSelectionCol ast.table.normalSelectionRow
-      -> [("<Space>", "output")]
+      -> [("<Enter>/<Space>", "output")]
       | otherwise
       -> [])
-    <> [("<Esc>", "quit")]
+    <> [("<Esc>/Q", "quit")]
     <> [("X", "axes")]
     <> tableKeybinds
 
