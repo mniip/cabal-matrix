@@ -269,6 +269,6 @@ cellWidget focused (Just pcs) = resizeWidthFill attr ' ' matrixCellWidth if
       -- are set up correctly.
       | DryRun <- step
       , Just (ExitFailure _) <- (indexCabalStep pcs step).exit
-      -> green
+      -> cyan
       | otherwise
       -> statusColor (indexCabalStep pcs step)
