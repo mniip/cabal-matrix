@@ -1,6 +1,9 @@
 module Cabal.Matrix.Tui.Table
   ( TableMeta(..)
-  , Table(..)
+  , TableHeaders(..)
+  , TableContents(..)
+  , tableLayout
+  , TableLayout
   , TableState(..)
   , ActiveSelection(..)
   , initTableState
@@ -14,6 +17,9 @@ import Cabal.Matrix.Tui.Flavor
 import Data.Foldable
 import Data.List
 import Data.List.NonEmpty (NonEmpty(..))
+import Data.List.NonEmpty qualified as NonEmpty
+import Data.Maybe
+import Data.Primitive.Array
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Graphics.Vty
@@ -26,12 +32,15 @@ data TableMeta = TableMeta
   , normalColumns :: Int
   }
 
-data Table = Table
+data TableHeaders = TableHeaders
   { frozenRowHeader :: Int -> Text
   , frozenRowCell :: Int -> Int -> Maybe Text
   , frozenColumnHeader :: Int -> Text
   , frozenColumnCell :: Int -> Int -> Maybe Text
-  , normalCell :: Int -> Int -> Maybe FlavorState
+  }
+
+newtype TableContents = TableContents
+  { normalCell :: Int -> Int -> Maybe FlavorState
   }
 
 data ActiveSelection
@@ -66,74 +75,115 @@ initTableState = TableState
   , activeSelection = SelectionNone
   }
 
+data TopHeaderLayout = TopHeaderLayout
+  { columns :: [NonEmpty Text]
+  , startY :: Int
+  , endY :: Int
+  }
+
+data LeftHeaderLayout = LeftHeaderLayout
+  { rows :: [Text]
+  , startX :: Int
+  , endX :: Int
+  }
+
+data TableLayout = TableLayout
+  { top :: Array TopHeaderLayout
+  , topLeft :: Image
+  , left :: Array LeftHeaderLayout
+  , leftTop :: Image
+  }
+
+tableLayout :: TableMeta -> TableHeaders -> TableLayout
+tableLayout meta headers = TableLayout
+  { top = arrayFromListN meta.frozenRows top
+  , topLeft = vertCat topLeft
+  , left = arrayFromListN meta.frozenColumns left
+  , leftTop = horizCat $ intersperse (char defAttr ' ') leftTop
+  }
+  where
+    (topLeft, top) = unzip $ snd $ mapAccumL mkTop 0
+      [ (rowHeader', columns', height)
+      | row <- [0 .. meta.frozenRows - 1]
+      , let
+          rowHeader = text' defAttr $ headers.frozenRowHeader row
+          columns =
+            [ foldMap (wrap matrixCellWidth) $ headers.frozenRowCell col row
+            | col <- [0 .. meta.normalColumns - 1]
+            ]
+          height = maximum (imageHeight rowHeader :| (length <$> columns))
+          rowHeader' = resizeHeight height rowHeader
+          columns' =
+            [ fmap (padTextToWidth matrixCellWidth)
+              $ fromMaybe (NonEmpty.singleton "") $ NonEmpty.nonEmpty
+              $ column <> replicate (height - length columns) ""
+            | column <- columns
+            ]
+      ]
+    mkTop !startY (rowHeader, columns, height)
+      | !endY <- startY + height
+      = (endY, (rowHeader, TopHeaderLayout { columns, startY, endY }))
+
+
+    (leftTop, left) = unzip $ snd $ mapAccumL mkLeft 0
+      [ (columnHeader', rows', width)
+      | col <- [0 .. meta.frozenColumns - 1]
+      , let
+          columnHeader = text' defAttr $ headers.frozenColumnHeader col
+          rows =
+            [ fromMaybe "" $ headers.frozenColumnCell col row
+            | row <- [0 .. meta.normalRows - 1]
+            ]
+          width = maximum (imageWidth columnHeader :| (wctwidth <$> rows))
+          columnHeader' = resizeWidth width columnHeader
+          rows' = padTextToWidth width <$> rows
+      ]
+    mkLeft !startX (columnHeader, rows, width)
+      | !endX <- startX + width
+      , !nextStartX <- endX + 1
+      = (nextStartX, (columnHeader, LeftHeaderLayout {rows, startX, endX}))
+
+padTextToWidth :: Int -> Text -> Text
+padTextToWidth !width !t = t <> Text.replicate (width - Text.length t) " "
+
 tableWidget
-  :: DisplayRegion -> TableMeta -> Table -> TableState -> (TableState, Image)
-tableWidget (outputWidth, outputHeight) meta table state =
+  :: DisplayRegion
+  -> TableMeta
+  -> TableContents
+  -> TableLayout
+  -> TableState
+  -> (TableState, Image)
+tableWidget (outputWidth, outputHeight) meta table layout state =
   ( state { frozenScrollX, frozenScrollY, normalScrollX, normalScrollY }
   , image
   )
   where
-    (topLeftParts, topParts) = unzip
-      [ (rowHeader, horizCat rowCells)
-      | row <- [0 .. meta.frozenRows - 1]
-      , let
-          rowHeader :| rowCells = padToCommonHeight $
-            ( defAttr
-            , ' '
-            , text' defAttr $ table.frozenRowHeader row
-            ) :|
-            intersperse (defAttr, ' ', char defAttr ' ')
-            [ ( attr
-              , ' '
-              , resizeWidthFill attr ' ' matrixCellWidth
-                if imageHeight txtImage == 0
-                then char attr ' '
-                else txtImage
-              )
-            | col <- [0 .. meta.normalColumns - 1]
-            , let
-                attr = if state.frozenSelectionRow == row
-                  && state.normalSelectionCol == col
-                  && state.activeSelection == SelectionTop
-                  then defAttr `withBackColor` blue
-                  else defAttr
-                txtImage = vertCat
-                  [ text' attr line
-                  | line <- foldMap (wrap matrixCellWidth)
-                    $ table.frozenRowCell col row
-                  ]
-            ]
+    top = vertCat
+      [ horizCat $ intersperse (char defAttr ' ')
+        [ vertCat $ text' attr <$> NonEmpty.toList column
+        | (icol, column) <- zip [0..] row.columns
+        , let
+            attr = if state.normalSelectionCol == icol
+              && state.frozenSelectionRow == irow
+              && state.activeSelection == SelectionTop
+              then defAttr `withBackColor` blue
+              else defAttr
+        ]
+      | (irow, row) <- zip [0..] $ toList layout.top
       ]
-    topLeft = vertCat topLeftParts -- TODO: this would look better right-aligned
-    top = vertCat topParts
-    topHeights = imageHeight <$> topParts
-    (leftTopParts, leftParts) = unzip $
-      intersperse (char defAttr ' ', charFill defAttr ' ' 1 meta.normalRows)
-      [ (columnHeader, vertCat columnCells)
-      | col <- [0 .. meta.frozenColumns - 1]
-      , let
-          columnHeader :| columnCells = padToCommonWidth $
-            ( defAttr
-            , ' '
-            , text' defAttr $ table.frozenColumnHeader col
-            ) :|
-            [ ( attr
-              , ' '
-              , resizeHeightFill attr ' ' matrixCellHeight
-                $ text' attr $ fold $ table.frozenColumnCell col row
-              )
-            | row <- [0 .. meta.normalRows - 1]
-            , let
-                attr = if state.frozenSelectionCol == col
-                  && state.normalSelectionRow == row
-                  && state.activeSelection == SelectionLeft
-                  then defAttr `withBackColor` blue
-                  else defAttr
-            ]
+    left = horizCat $ intersperse (char defAttr ' ')
+      [ vertCat
+        [ text' attr row
+        | (irow, row) <- zip [0..] col.rows
+        , let
+            attr = if state.frozenSelectionCol == icol
+              && state.normalSelectionRow == irow
+              && state.activeSelection == SelectionLeft
+              then defAttr `withBackColor` blue
+              else defAttr
+        ]
+      | (icol, col) <- zip [0..] $ toList layout.left
       ]
-    leftTop = horizCat leftTopParts
-    left = horizCat leftParts
-    leftWidths = imageWidth <$> leftParts
     normal = vertCat
       [ horizCat $
         intersperse (char defAttr ' ')
@@ -147,17 +197,25 @@ tableWidget (outputWidth, outputHeight) meta table state =
       | row <- [0 .. meta.normalRows - 1]
       ]
 
-    topLeftWidth = max (sum leftWidths) (imageWidth topLeft)
+    topLeftWidth = max (imageWidth layout.leftTop) (imageWidth layout.topLeft)
 
     frozenWidth = min topLeftWidth ((outputWidth - 1) `div` 2)
     normalWidth = outputWidth - 1 - frozenWidth
-    frozenHeight = min (sum topHeights) ((outputHeight - 3) `div` 2)
+    frozenHeight = min (imageHeight layout.topLeft) ((outputHeight - 3) `div` 2)
     normalHeight = outputHeight - 3 - frozenHeight
 
-    frozenScrollX = case extentAt leftWidths (state.frozenSelectionCol * 2) of
-      (l, r) -> clamp (r - frozenWidth) l state.frozenScrollX
-    frozenScrollY = case extentAt topHeights state.frozenSelectionRow of
-      (l, r) -> clamp (r - frozenHeight) l state.frozenScrollY
+    frozenScrollX
+      | state.frozenSelectionCol < sizeofArray layout.left
+      , LeftHeaderLayout{ startX, endX }
+        <- indexArray layout.left state.frozenSelectionCol
+      = clamp (endX - frozenWidth) startX state.frozenScrollX
+      | otherwise = state.frozenScrollX
+    frozenScrollY
+      | state.frozenSelectionRow < sizeofArray layout.top
+      , TopHeaderLayout{ startY, endY }
+        <- indexArray layout.top state.frozenSelectionRow
+      = clamp (endY - frozenHeight) startY state.frozenScrollY
+      | otherwise = state.frozenScrollY
     normalScrollX = clamp
       ((state.normalSelectionCol + 1) * (matrixCellWidth + 1) - 1 - normalWidth)
       (state.normalSelectionCol * (matrixCellWidth + 1))
@@ -178,7 +236,7 @@ tableWidget (outputWidth, outputHeight) meta table state =
 
     image = vertCat
       [ resize frozenWidth frozenHeight
-        (translateY (-frozenScrollY) topLeft)
+        (translateY (-frozenScrollY) layout.topLeft)
         <|> scrollBorderY canFrozenScrollN canFrozenScrollS frozenHeight
         <|> crop normalWidth frozenHeight
           (translate (-normalScrollX) (-frozenScrollY) top)
@@ -186,7 +244,7 @@ tableWidget (outputWidth, outputHeight) meta table state =
         <|> char defAttr borderNESW
         <|> scrollBorderX canNormalScrollW canNormalScrollE normalWidth
       , resizeWidth frozenWidth
-        (translateX (-frozenScrollX) leftTop)
+        (translateX (-frozenScrollX) layout.leftTop)
         <|> char defAttr borderNS
       , scrollBorderX canFrozenScrollW canFrozenScrollE frozenWidth
         <|> char defAttr borderNESW
@@ -197,13 +255,6 @@ tableWidget (outputWidth, outputHeight) meta table state =
         <|> crop normalWidth normalHeight
           (translate (-normalScrollX) (-normalScrollY) normal)
       ]
-
-extentAt :: [Int] -> Int -> (Int, Int)
-extentAt = go 0
-  where
-    go !acc (!x:_) 0 = (acc, acc + x)
-    go acc (x:xs) n = go (acc + x) xs (n - 1)
-    go _ [] _ = (0, 0)
 
 scrollBorderX :: Bool -> Bool -> Int -> Image
 scrollBorderX left right width

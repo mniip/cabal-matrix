@@ -36,6 +36,7 @@ data AppState = AppState
   , headerEditor :: Maybe HeaderEditorState
   , flavorStates :: IntMap FlavorState
   , openedCell :: Maybe (FlavorIndex, OutputState)
+  , layout :: TableLayout
   , table :: TableState
   }
 
@@ -43,29 +44,39 @@ type TuiMatrix = Rectangle (PerCabalStep (NonEmpty Text)) Text (Maybe Text)
 
 initAppState :: TuiMatrix -> AppState
 initAppState matrix = AppState
-  { headers = mkHeaderState matrix vertical
+  { headers
   , headerEditor = Nothing
   , flavorStates = IntMap.fromList
     $ zip [0..] $ map initFlavorState $ toList $ Rectangle.rows matrix
   , openedCell = Nothing
+  , layout = mkTableLayout headers
   , table = initTableState
   }
   where
     !numColumns = sizeofArray $ Rectangle.columns matrix
     !vertical = arrayFromListN numColumns
       [i * 2 >= numColumns | i <- [0 .. numColumns - 1]]
+    !headers = mkHeaderState matrix vertical
 
-mkTableMeta :: AppState -> TableMeta
-mkTableMeta ast = TableMeta
-  { frozenRows = sizeofArray
-    $ Rectangle.columns ast.headers.horizontalHeader
-  , normalRows = sizeofArray
-    $ Rectangle.rows ast.headers.verticalHeader
-  , frozenColumns = sizeofArray
-    $ Rectangle.columns ast.headers.verticalHeader
-  , normalColumns = sizeofArray
-    $ Rectangle.rows ast.headers.horizontalHeader
+mkTableMeta :: HeaderState -> TableMeta
+mkTableMeta headers = TableMeta
+  { frozenRows = sizeofArray $ Rectangle.columns headers.horizontalHeader
+  , normalRows = sizeofArray $ Rectangle.rows headers.verticalHeader
+  , frozenColumns = sizeofArray $ Rectangle.columns headers.verticalHeader
+  , normalColumns = sizeofArray $ Rectangle.rows headers.horizontalHeader
   }
+
+mkTableHeaders :: HeaderState -> TableHeaders
+mkTableHeaders headers = TableHeaders
+  { frozenRowHeader = indexArray $ Rectangle.columns headers.horizontalHeader
+  , frozenRowCell = \x y -> Rectangle.indexCell headers.horizontalHeader y x
+  , frozenColumnHeader = indexArray $ Rectangle.columns headers.verticalHeader
+  , frozenColumnCell = \x y -> Rectangle.indexCell headers.verticalHeader x y
+  }
+
+mkTableLayout :: HeaderState -> TableLayout
+mkTableLayout headers
+  = tableLayout (mkTableMeta headers) (mkTableHeaders headers)
 
 appWidget
   :: DisplayRegion
@@ -84,26 +95,18 @@ appWidget (width, height) matrix enabledSteps ast
       , (hes', editor) <- headerEditorWidget (width, height - 1)
         matrix ast.headers hes
       , (ts', tbl) <- tableWidget (width - imageWidth editor - 1, height - 1)
-        (mkTableMeta ast) table ast.table
+        (mkTableMeta ast.headers) table ast.layout ast.table
       = (ast { headerEditor = Just hes', table = ts' },) $ horizCat
         [ editor
         , charFill defAttr borderNS 1 (height - 1)
         , tbl
         ]
       | (ts', tbl) <- tableWidget (width, height - 1)
-        (mkTableMeta ast) table ast.table
+        (mkTableMeta ast.headers) table ast.layout ast.table
       = (ast { table = ts' },) $ tbl
 
-    table = Table
-      { frozenRowHeader = indexArray
-        $ Rectangle.columns ast.headers.horizontalHeader
-      , frozenRowCell = \x y -> Rectangle.indexCell
-        ast.headers.horizontalHeader y x
-      , frozenColumnHeader = indexArray
-        $ Rectangle.columns ast.headers.verticalHeader
-      , frozenColumnCell = \x y -> Rectangle.indexCell
-        ast.headers.verticalHeader x y
-      , normalCell = \x y -> do
+    table = TableContents
+      { normalCell = \x y -> do
         i <- Rectangle.indexCell ast.headers.gridToFlavor x y
         IntMap.lookup i ast.flavorStates
       }
@@ -152,7 +155,11 @@ appHandleEvent matrix enabledSteps aev ast = case aev of
     | Just headerEditor <- ast.headerEditor
     , (headerEditor', headers')
       <- headerEditorHandleEvent matrix ev (headerEditor, ast.headers)
-    -> Just ast { headers = headers', headerEditor = Just headerEditor' }
+    -> Just ast
+      { headers = headers'
+      , headerEditor = Just headerEditor'
+      , layout = mkTableLayout headers'
+      }
   VtyEvent (EvKey (KChar 'x') _)
     -> Just ast { headerEditor = Just initHeaderEditorState }
   VtyEvent (EvKey (isEnterKey -> True) _)
@@ -167,7 +174,8 @@ appHandleEvent matrix enabledSteps aev ast = case aev of
     -> Just ast { openedCell = Just (flavorIndex, initOutputState fs)}
     | otherwise -> Just ast
   VtyEvent ev
-    -> Just ast { table = tableHandleEvent (mkTableMeta ast) ev ast.table }
+    -> Just ast
+      { table = tableHandleEvent (mkTableMeta ast.headers) ev ast.table }
   where
     isExitKey = \case
       KEsc -> True
