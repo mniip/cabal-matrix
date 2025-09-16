@@ -119,6 +119,25 @@ appWidget (width, height) matrix enabledSteps ast
       | (bind, desc) <- appKeybinds ast
       ]
 
+appHandleSchedulerMessage
+  :: SchedulerMessage
+  -> AppState
+  -> AppState
+appHandleSchedulerMessage ev ast = case ev of
+  OnStepStarted{ flavorIndex } -> ast
+    { flavorStates = IntMap.adjust (flavorHandleSchedulerEvent ev)
+      flavorIndex ast.flavorStates
+    }
+  OnStepFinished{ flavorIndex } -> ast
+    { flavorStates = IntMap.adjust (flavorHandleSchedulerEvent ev)
+      flavorIndex ast.flavorStates
+    }
+  OnOutput{ flavorIndex } -> ast
+    { flavorStates = IntMap.adjust (flavorHandleSchedulerEvent ev)
+      flavorIndex ast.flavorStates
+    }
+  OnDone -> ast
+
 appHandleEvent
   :: TuiMatrix
   -> PerCabalStep Bool
@@ -126,19 +145,6 @@ appHandleEvent
   -> AppState
   -> Maybe AppState
 appHandleEvent matrix enabledSteps aev ast = case aev of
-  SchedulerEvent ev@OnStepStarted{ flavorIndex } -> Just ast
-    { flavorStates = IntMap.adjust (flavorHandleSchedulerEvent ev)
-      flavorIndex ast.flavorStates
-    }
-  SchedulerEvent ev@OnStepFinished{ flavorIndex } -> Just ast
-    { flavorStates = IntMap.adjust (flavorHandleSchedulerEvent ev)
-      flavorIndex ast.flavorStates
-    }
-  SchedulerEvent ev@OnOutput{ flavorIndex } -> Just ast
-    { flavorStates = IntMap.adjust (flavorHandleSchedulerEvent ev)
-      flavorIndex ast.flavorStates
-    }
-  SchedulerEvent OnDone -> Just ast
   AppTimerEvent ev -> Just ast
     { flavorStates = IntMap.map (flavorHandleTimerEvent ev) ast.flavorStates }
   VtyEvent (EvKey (isExitKey -> True) _)
@@ -210,28 +216,34 @@ appKeybinds ast
 
 data AppEvent
   = VtyEvent Event
-  | SchedulerEvent SchedulerMessage
   | AppTimerEvent TimerEvent
 
 tuiMainLoop
-  :: TuiMatrix -> AppState -> PerCabalStep Bool -> TBQueue AppEvent -> IO ()
+  :: TuiMatrix
+  -> AppState
+  -> PerCabalStep Bool
+  -> TBQueue (Either SchedulerMessage AppEvent)
+  -> IO ()
 tuiMainLoop tuiMatrix ast0 steps queue = do
   vty <- mkVty defaultConfig
 
   _ <- forkIO $ forever do
-    atomically . writeTBQueue queue . VtyEvent =<< vty.nextEvent
+    atomically . writeTBQueue queue . Right . VtyEvent =<< vty.nextEvent
 
   let
-    go !ast = do
+    goDisplay !ast = do
       bounds <- vty.outputIface.displayBounds
       let (!ast', !image) = appWidget bounds tuiMatrix steps ast
       vty.update $ picForImage image
-      ev <- atomically $ readTBQueue queue
-      case appHandleEvent tuiMatrix steps ev ast' of
-        Just ast'' -> go ast''
+      go ast'
+
+    go !ast = atomically (readTBQueue queue) >>= \case
+      Left msg -> go (appHandleSchedulerMessage msg ast)
+      Right ev -> case appHandleEvent tuiMatrix steps ev ast of
+        Just ast' -> goDisplay ast'
         Nothing -> vty.shutdown
 
-  go ast0
+  goDisplay ast0
 
 data TuiLiveArgs = TuiLiveArgs
   { jobs :: Int
@@ -260,9 +272,9 @@ tuiLive args = do
   queue <- newTBQueueIO 1
   _ <- forkIO $ forever do
     threadDelay 100000
-    atomically . writeTBQueue queue . AppTimerEvent $ TimerEvent
+    atomically . writeTBQueue queue . Right . AppTimerEvent $ TimerEvent
   _hdl <- startScheduler (schedulerInputLive args flavors)
-    (atomically . writeTBQueue queue . SchedulerEvent)
+    (atomically . writeTBQueue queue . Left)
 
   tuiMainLoop tuiMatrix (initAppState tuiMatrix) args.steps queue
 
