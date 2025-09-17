@@ -77,25 +77,25 @@ initTableState = TableState
   }
 
 data TopHeaderLayout = TopHeaderLayout
-  { rowIndex :: Int
-  , rowHeader :: Image
-  , columns :: Array (NonEmpty Text)
-  , height :: Int
+  { rowIndex :: !Int
+  , rowHeader :: !Image
+  , columns :: !(Array (NonEmpty Text))
+  , height :: !Int
   }
 
 data LeftHeaderLayout = LeftHeaderLayout
-  { columnIndex :: Int
-  , columnHeader :: Image
-  , rows :: Array Text
-  , width :: Int
+  { columnIndex :: !Int
+  , columnHeader :: !Image
+  , rows :: !(Array Text)
+  , width :: !Int
   }
 
 data TableLayout = TableLayout
-  { rowHeaderWidth :: Int
-  , top :: Map Int TopHeaderLayout
-  , topHeight :: Int
-  , left :: Map Int LeftHeaderLayout
-  , leftWidth :: Int
+  { rowHeaderWidth :: !Int
+  , top :: !(Map Int TopHeaderLayout)
+  , topHeight :: !Int
+  , left :: !(Map Int LeftHeaderLayout)
+  , leftWidth :: !Int
   }
 
 tableLayout :: TableMeta -> TableHeaders -> TableLayout
@@ -128,7 +128,7 @@ tableLayout meta headers = TableLayout
             [ foldMap (wrap matrixCellWidth) $ headers.frozenRowCell col row
             | col <- [0 .. meta.normalColumns - 1]
             ]
-          height = maximum (imageHeight rowHeader :| (length <$> columns))
+          !height = maximum (imageHeight rowHeader :| (length <$> columns))
       ]
     mkTop !startY !layout
       | !endY <- startY + layout.height = (endY, (endY, layout))
@@ -150,7 +150,7 @@ tableLayout meta headers = TableLayout
             [ fromMaybe "" $ headers.frozenColumnCell col row
             | row <- [0 .. meta.normalRows - 1]
             ]
-          width = maximum (imageWidth columnHeader :| (wctwidth <$> rows))
+          !width = maximum (imageWidth columnHeader :| (wctwidth <$> rows))
       ]
     mkLeft !startX layout
       | !endX <- startX + layout.width

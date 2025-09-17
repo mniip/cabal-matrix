@@ -38,8 +38,8 @@ data StepState = StepState
   { cmdline :: NonEmpty Text
   , started :: Bool
   , revOutput :: [(OutputChannel, ByteString)]
-  , lastTickOutputCount :: Int
-  , outputCount :: Int
+  , lastTickOutputCount :: !Int
+  , outputCount :: !Int
   , exit :: Maybe ExitCode
   }
 
@@ -152,7 +152,8 @@ flavorHandleSchedulerEvent ev fs = case ev of
   OnDone{} -> fs
 
 flavorHandleTimerEvent :: TimerEvent -> FlavorState -> FlavorState
-flavorHandleTimerEvent ev = fmap (stepHandleTimerEvent ev)
+flavorHandleTimerEvent ev fs
+  = tabulateCabalStep' \step -> stepHandleTimerEvent ev $ indexCabalStep fs step
 
 newtype OutputState = OutputState
   { selectedStep :: CabalStep
