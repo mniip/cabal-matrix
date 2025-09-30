@@ -1,5 +1,6 @@
 module Cabal.Matrix.Cli
   ( CliOptions(..)
+  , getSchedulerConfig
   , ExprSource(..)
   , RunOptions(..)
   , cliParser
@@ -8,11 +9,13 @@ module Cabal.Matrix.Cli
 import Control.Applicative
 import Cabal.Matrix.CabalArgs
 import Cabal.Matrix.Matrix
+import Cabal.Matrix.Scheduler
 import Control.Monad.Trans.Except
 import Control.Monad.Trans.Reader
 import Control.Monad.Trans.State
 import Data.Char
 import Data.List.Split
+import Data.Maybe
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Traversable
@@ -22,6 +25,7 @@ import Distribution.Version
 import Options.Applicative
 import Options.Applicative.Help.Pretty
 import Options.Applicative.Types
+import System.Environment
 
 
 data ExprSource
@@ -30,11 +34,19 @@ data ExprSource
 
 data RunOptions = RunOptions
   { jobs :: Int
+  , cabalOverride :: Maybe FilePath
   , steps :: PerCabalStep Bool
   , options :: [Text]
   , targets :: [Text]
   , mode :: CabalMode
   }
+
+getSchedulerConfig :: RunOptions -> IO SchedulerConfig
+getSchedulerConfig RunOptions{..} = do
+  cabalExecutable <- case cabalOverride of
+    Just override -> pure override
+    Nothing -> fromMaybe "cabal" <$> lookupEnv "CABAL"
+  pure SchedulerConfig{..}
 
 data CliOptions
   = ExprToExpr
@@ -79,12 +91,21 @@ data Target
   | ToTui
 
 cliParser :: ParserInfo (Either Text CliOptions)
-cliParser = info (options <**> helper) mempty
+cliParser = info (optionsAsCommand <|> options) mempty
   where
+    -- Cabal external commands will invoke us as "cabal-matrix matrix $ARGS",
+    -- see https://github.com/haskell/cabal/issues/10275 . Using an
+    -- optparse-applicative 'command' we can swallow this "matrix" exactly when
+    -- it's the first argument -- otherwise we interpret "matrix" as a target.
+    -- 'internal' makes it hidden from all help texts.
+    optionsAsCommand = subparser
+      (internal <> command "matrix" (info options mempty))
+
     options = mkOptions
       <$> sourceOption
       <*> optional runOptions
       <*> targetOption
+      <**> helper
     sourceOption = (FromExpr <$> exprSourceOption)
       <|> (FromMatrix <$> fromMatrixOption)
       <|> (FromRecord <$> fromRecordOption)
@@ -157,6 +178,7 @@ cliParser = info (options <**> helper) mempty
 runOptions :: Parser RunOptions
 runOptions = parserOptionGroup "Running Cabal:" $ RunOptions
   <$> jobsOption
+  <*> cabalExecutableOption
   <*> stepsOptions
   <*> optionsOptions
   <*> targetsOptions
@@ -183,6 +205,9 @@ runOptions = parserOptionGroup "Running Cabal:" $ RunOptions
       <*> flag True False (long "no-full-build"
         <> help "Skip the normal build, where the selected targets are fully \
           \built")
+    cabalExecutableOption = optional $ option auto (metavar "PATH"
+      <> help "Use the specified cabal executable. Defaults to $CABAL or \
+        \whichever \"cabal\" exists in $PATH.")
 
 data MatrixOption
   = OpenParen

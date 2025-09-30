@@ -8,7 +8,8 @@
 -- The scheduler is given an 'Array' of 'Flavor's, and subsequent communication
 -- refers to flavors from this array by their index.
 module Cabal.Matrix.Scheduler
-  ( SchedulerInput(..)
+  ( SchedulerConfig(..)
+  , mkCabalArgs
   , FlavorIndex
   , startScheduler
   , SchedulerMessage(..)
@@ -35,17 +36,16 @@ import System.Directory
 import System.Exit
 
 
-data SchedulerInput = SchedulerInput
+data SchedulerConfig = SchedulerConfig
   { jobs :: Int
     -- ^ Number of flavors that could be building in parallel at a time.
   , options :: [Text]
     -- ^ Options to use in all builds.
   , targets :: [Text]
+  , cabalExecutable :: FilePath
   , mode :: CabalMode
   , steps :: PerCabalStep Bool
     -- ^ Which build steps to run or skip.
-  , flavors :: Array Flavor
-    -- ^ Which flavors to build.
   }
 
 -- | Index into 'flavors' of 'SchedulerInput'
@@ -94,23 +94,27 @@ data SchedulerState = SchedulerState
     -- ^ INVARIANT: disjoint from 'stopRequested' and from keys of 'processes'
   }
 
-mkCabalArgs :: SchedulerInput -> CabalStep -> FlavorIndex -> CabalArgs
-mkCabalArgs input step flavorIndex = CabalArgs
-  { step
+mkCabalArgs :: SchedulerConfig -> CabalStep -> Flavor -> CabalArgs
+mkCabalArgs input step flavor = CabalArgs
+  { cabalExecutable = input.cabalExecutable
+  , step
   , mode = input.mode
   , options = input.options
   , targets = input.targets
-  , flavor = indexArray input.flavors flavorIndex
+  , flavor
   }
 
 startScheduler
-  :: SchedulerInput -> (SchedulerMessage -> IO ()) -> IO SchedulerHandle
-startScheduler input cb = do
+  :: SchedulerConfig
+  -> Array Flavor
+  -> (SchedulerMessage -> IO ())
+  -> IO SchedulerHandle
+startScheduler input flavors cb = do
   sem <- newQSem input.jobs
   mvar <- newMVar SchedulerState
     { processes = Map.empty
     , stopRequested = Set.empty
-    , queue = [0 .. sizeofArray input.flavors - 1]
+    , queue = [0 .. sizeofArray flavors - 1]
     }
   let
     waitForNext :: IO ()
@@ -146,7 +150,7 @@ startScheduler input cb = do
         stdoutClosed <- newEmptyMVar
         stderrClosed <- newEmptyMVar
         cb OnStepStarted { flavorIndex, step }
-        let args = mkCabalArgs input step flavorIndex
+        let args = mkCabalArgs input step (indexArray flavors flavorIndex)
         for_ (environmentFilePath args) $ void . try @_ @IOError . removeFile
         startProcess (renderCabalArgs args)
           (reactStep flavorIndex step nextSteps stdoutClosed stderrClosed)

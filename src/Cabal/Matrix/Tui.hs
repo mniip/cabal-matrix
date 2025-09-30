@@ -4,6 +4,7 @@ module Cabal.Matrix.Tui
   ) where
 
 import Cabal.Matrix.CabalArgs
+import Cabal.Matrix.Cli
 import Cabal.Matrix.Matrix
 import Cabal.Matrix.Record
 import Cabal.Matrix.Rectangle (Rectangle)
@@ -244,25 +245,23 @@ tuiMainLoop tuiMatrix ast0 steps queue = do
 
   goDisplay ast0
 
-tuiMatrixLive :: RunOptions -> Matrix -> TuiMatrix
-tuiMatrixLive RunOptions{..}
+tuiMatrixLive :: SchedulerConfig -> Matrix -> TuiMatrix
+tuiMatrixLive schedulerConfig
   = Rectangle.mapRows \flavor -> tabulateCabalStep' \step
-    -> renderCabalArgs CabalArgs{..}
-
-schedulerInputLive :: RunOptions -> Array Flavor -> SchedulerInput
-schedulerInputLive RunOptions{..} flavors = SchedulerInput{..}
+    -> renderCabalArgs $ mkCabalArgs schedulerConfig step flavor
 
 tuiLive :: Matrix -> RunOptions -> IO ()
 tuiLive matrix options = do
+  schedulerConfig <- getSchedulerConfig options
   let
-    !tuiMatrix = tuiMatrixLive options matrix
+    !tuiMatrix = tuiMatrixLive schedulerConfig matrix
     !flavors = Rectangle.rows matrix
 
   queue <- newTBQueueIO 1
   _ <- forkIO $ forever do
     threadDelay 100000
     atomically . writeTBQueue queue . Right . AppTimerEvent $ TimerEvent
-  _hdl <- startScheduler (schedulerInputLive options flavors)
+  _hdl <- startScheduler schedulerConfig flavors
     (atomically . writeTBQueue queue . Left)
 
   tuiMainLoop tuiMatrix (initAppState tuiMatrix) options.steps queue

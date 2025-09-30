@@ -111,10 +111,10 @@ instance Monoid Flavor where
     , orderedOptions = []
     }
 
-
 -- | A single invocation of @cabal@.
 data CabalArgs = CabalArgs
-  { mode :: CabalMode
+  { cabalExecutable :: FilePath
+  , mode :: CabalMode
   , step :: CabalStep
   , options :: [Text]
   , targets :: [Text]
@@ -122,7 +122,8 @@ data CabalArgs = CabalArgs
   }
 
 data CabalRawArgs = CabalRawArgs
-  { buildDir :: FilePath
+  { cabalExecutable :: FilePath
+  , buildDir :: FilePath
     -- ^ @--builddir@, where build artifacts will be placed. Different
     -- flavors using the same compiler must use different 'buildDir'.
   , mode :: CabalMode
@@ -157,7 +158,8 @@ renderRawCabalArgs ca = "cabal" :| mconcat
 
 argsToRaw :: CabalArgs -> CabalRawArgs
 argsToRaw args@CabalArgs{..} = CabalRawArgs
-  { buildDir = buildDirFor flavor
+  { cabalExecutable
+  , buildDir = buildDirFor flavor
   , mode
   , envFile = environmentFilePath args
   , step

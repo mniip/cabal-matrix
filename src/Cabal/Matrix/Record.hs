@@ -44,17 +44,18 @@ collapseOutput = map (\grp -> (fst $ NonEmpty.head grp, foldMap snd grp))
   . NonEmpty.groupBy ((==) `on` fst)
 
 record :: Matrix -> RunOptions -> IO [FlavorResult]
-record matrix RunOptions{..} = do
+record matrix options = do
+  schedulerConfig <- getSchedulerConfig options
   let
     !flavors = Rectangle.rows matrix
     !statics = arrayFromListN (sizeofArray flavors)
       [ StaticFlavorResult
         { flavor = Map.fromList $ mapMaybe sequenceA pairs
-        , cmdlines = tabulateCabalStep' \step -> renderCabalArgs CabalArgs{..}
+        , cmdlines = tabulateCabalStep' \step
+          -> renderCabalArgs $ mkCabalArgs schedulerConfig step flavor
         }
       | (flavor, pairs) <- Rectangle.toRowMajor matrix
       ]
-    schedulerInput = SchedulerInput{..}
 
   results <- flip traverseArrayP flavors
     \_ -> sequenceA $ tabulateCabalStep' \_ -> newIORef StepState
@@ -63,7 +64,7 @@ record matrix RunOptions{..} = do
       , exit = Nothing
       }
   doneVar <- newEmptyMVar
-  _ <- startScheduler schedulerInput
+  _ <- startScheduler schedulerConfig flavors
       \case
         OnDone -> putMVar doneVar ()
         OnStepStarted{ flavorIndex, step } -> atomicModifyIORef'
