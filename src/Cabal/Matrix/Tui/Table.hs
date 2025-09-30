@@ -104,7 +104,7 @@ tableLayout meta headers = TableLayout
   , top
   , topHeight
   , left
-  , leftWidth = max 0 (pred leftWidth' - 1)
+  , leftWidth = max 0 (pred leftWidth')
     -- ^ Remove the width of the trailing separator if there were any columns,
     -- but don't underflow to negative if there weren't.
   }
@@ -243,10 +243,10 @@ tableWidget (outputWidth, outputHeight) meta table layout state =
         ]
       | row <- topVisible
       ]
-    leftTop = cropRight frozenWidth $ translateX frozenTransX
+    leftTop = resizeWidth frozenWidth $ translateX frozenTransX
       $ horizCat $ intersperse (backgroundFill 1 1)
       [col.columnHeader | col <- leftVisible]
-    left = crop frozenWidth normalHeight
+    left = resize frozenWidth normalHeight
       $ translate frozenTransX normalTransY
       $ horizCat $ intersperse (backgroundFill 1 1)
       [ vertCat
