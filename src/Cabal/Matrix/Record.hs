@@ -24,8 +24,11 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe
 import Data.Primitive
 import Data.Text (Text)
+import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
+import Data.Text.IO qualified as Text
 import System.Exit
+import System.IO
 
 
 data StaticFlavorResult = StaticFlavorResult
@@ -70,9 +73,12 @@ record matrix options = do
         OnStepStarted{ flavorIndex, step } -> atomicModifyIORef'
           (indexCabalStep (indexArray results flavorIndex) step)
           \state -> (state { started = True }, ())
-        OnStepFinished{ flavorIndex, step, exitCode } -> atomicModifyIORef'
-          (indexCabalStep (indexArray results flavorIndex) step)
-          \state -> (state { exit = Just exitCode }, ())
+        OnStepFinished{ flavorIndex, step, exitCode } -> do
+          atomicModifyIORef'
+            (indexCabalStep (indexArray results flavorIndex) step)
+            \state -> (state { exit = Just exitCode }, ())
+          Text.hPutStrLn stderr $ prettyStepFinished
+            (snd $ Rectangle.indexRow matrix flavorIndex) step exitCode
         OnOutput{ flavorIndex, step, channel, output } -> atomicModifyIORef'
           (indexCabalStep (indexArray results flavorIndex) step)
           \state
@@ -81,6 +87,23 @@ record matrix options = do
   takeMVar doneVar
   frozenResults <- traverseArrayP (traverse readIORef) results
   pure $ zipWith mkFlavorResult (toList statics) (toList frozenResults)
+
+prettyStepFinished :: [(Text, Maybe Text)] -> CabalStep -> ExitCode -> Text
+prettyStepFinished flavor step exit
+  = prettyStep <> " " <> prettyExit <> " for {" <> prettyFlavor <> "}"
+  where
+    prettyStep = case step of
+      DryRun -> "plan"
+      OnlyDownload -> "download"
+      OnlyDependencies -> "dependencies"
+      FullBuild -> "build"
+    prettyExit = case exit of
+      ExitSuccess -> "ok"
+      ExitFailure _ -> "failed"
+    prettyFlavor = Text.intercalate ","
+      [ Text.pack (show key) <> ": " <> Text.pack (show value)
+      | (key, Just value) <- flavor
+      ]
 
 -- | The ultimate result of having completed a single step of a single flavor.
 data StepResult = StepResult
