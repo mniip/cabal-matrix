@@ -270,16 +270,16 @@ frameOptions = parserOptionGroup "Specifying configurations:"
         , Expr "--custom-options" . uncurry CustomUnorderedExpr
           <$> option readCustom
           (long "custom-options" <> metavar "NAME=--opt1,--opt2,..."
-            <> help "A single build with the provided options. NAME is the \
-              \field name, which defines how this build is categorized in the \
-              \matrix. --add'ing multiple --custom-options with the same NAME \
-              \can be used to create a list.")
+            <> help "A single build with all of the provided options. NAME is \
+              \the field name, which defines how this build is categorized in \
+              \the matrix. --add'ing multiple --custom-options with the same \
+              \NAME can be used to create a list.")
         , Expr "--custom-ordered-options" . uncurry CustomOrderedExpr
           <$> option readCustom
           (long "custom-ordered-options" <> metavar "NAME=--opt1,--opt2,..."
             <> help "A single build with the provided options, for options \
-              \are order-sensitive. The provided options are appended after \
-              \all other options.")
+              \that are order-sensitive. The provided options are appended \
+              \after all other options.")
         ]
       , flag' OpenParen
         (long "[" <> style (\_ -> "--[ LIST --]")
