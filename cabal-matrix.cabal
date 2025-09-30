@@ -53,7 +53,7 @@ library
     Cabal.Matrix.Matrix
     Cabal.Matrix.ProcessRunner
     Cabal.Matrix.Record
-    Cabal.Matrix.RecordResult
+    Cabal.Matrix.Files
     Cabal.Matrix.Rectangle
     Cabal.Matrix.Scheduler
     Cabal.Matrix.Tui

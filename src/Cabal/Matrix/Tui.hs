@@ -1,12 +1,11 @@
 module Cabal.Matrix.Tui
-  ( TuiLiveArgs(..)
-  , tuiLive
+  ( tuiLive
   , tuiRecording
   ) where
 
 import Cabal.Matrix.CabalArgs
 import Cabal.Matrix.Matrix
-import Cabal.Matrix.RecordResult
+import Cabal.Matrix.Record
 import Cabal.Matrix.Rectangle (Rectangle)
 import Cabal.Matrix.Rectangle qualified as Rectangle
 import Cabal.Matrix.Scheduler
@@ -245,77 +244,60 @@ tuiMainLoop tuiMatrix ast0 steps queue = do
 
   goDisplay ast0
 
-data TuiLiveArgs = TuiLiveArgs
-  { jobs :: Int
-  , options :: [Text]
-  , targets :: [Text]
-  , steps :: PerCabalStep Bool
-  , matrixExpr :: MatrixExpr
-  , mode :: CabalMode
-  }
-
-tuiMatrixLive :: TuiLiveArgs -> Matrix -> TuiMatrix
-tuiMatrixLive TuiLiveArgs{..}
+tuiMatrixLive :: RunOptions -> Matrix -> TuiMatrix
+tuiMatrixLive RunOptions{..}
   = Rectangle.mapRows \flavor -> tabulateCabalStep' \step
     -> renderCabalArgs CabalArgs{..}
 
-schedulerInputLive :: TuiLiveArgs -> Array Flavor -> SchedulerInput
-schedulerInputLive TuiLiveArgs{..} flavors = SchedulerInput{..}
+schedulerInputLive :: RunOptions -> Array Flavor -> SchedulerInput
+schedulerInputLive RunOptions{..} flavors = SchedulerInput{..}
 
-tuiLive :: TuiLiveArgs -> IO ()
-tuiLive args = do
-  !matrix <- evalMatrixExpr args.matrixExpr
+tuiLive :: Matrix -> RunOptions -> IO ()
+tuiLive matrix options = do
   let
-    !tuiMatrix = tuiMatrixLive args matrix
+    !tuiMatrix = tuiMatrixLive options matrix
     !flavors = Rectangle.rows matrix
 
   queue <- newTBQueueIO 1
   _ <- forkIO $ forever do
     threadDelay 100000
     atomically . writeTBQueue queue . Right . AppTimerEvent $ TimerEvent
-  _hdl <- startScheduler (schedulerInputLive args flavors)
+  _hdl <- startScheduler (schedulerInputLive options flavors)
     (atomically . writeTBQueue queue . Left)
 
-  tuiMainLoop tuiMatrix (initAppState tuiMatrix) args.steps queue
+  tuiMainLoop tuiMatrix (initAppState tuiMatrix) options.steps queue
 
   -- TODO: should probably kill the processes in _hdl
 
-tuiMatrixRecording :: RecordResult -> TuiMatrix
-tuiMatrixRecording (RecordResult results) = matrix
+tuiMatrixRecording :: [FlavorResult] -> TuiMatrix
+tuiMatrixRecording results = matrix
   where
     !cols = Set.toList $ Set.unions
       [ Map.keysSet result.flavor
       | result <- results
       ]
     !matrix = Rectangle.fromRowMajor cols
-      [ ( tabulateCabalStep' \step -> cmdline result step
+      [ ( tabulateCabalStep' \step
+          -> maybe noCmdline (.cmdline) $ indexCabalStep result.steps step
         , [Map.lookup col result.flavor | col <- cols]
         )
       | result <- results
       ]
-    cmdline result = \case
-      DryRun -> maybe noCmdline (.cmdline) result.dryRun
-      OnlyDownload -> maybe noCmdline (.cmdline) result.onlyDownload
-      OnlyDependencies -> maybe noCmdline (.cmdline) result.onlyDependencies
-      FullBuild -> maybe noCmdline (.cmdline) result.fullBuild
     noCmdline = pure "" -- TODO: better representation?
 
-addOutputFromRecording :: RecordResult -> AppState -> AppState
-addOutputFromRecording (RecordResult results) ast = ast
+addOutputFromRecording :: [FlavorResult] -> AppState -> AppState
+addOutputFromRecording results ast = ast
   { flavorStates = foldl'
     (\im (i, result) -> IntMap.adjust (flavorFromRecording result) i im)
     ast.flavorStates
     (zip [0..] results)
   }
 
-stepsRecording :: RecordResult -> PerCabalStep Bool
-stepsRecording (RecordResult results) = tabulateCabalStep' \case
-  DryRun -> any (isJust . (.dryRun)) results
-  OnlyDownload -> any (isJust . (.onlyDownload)) results
-  OnlyDependencies -> any (isJust . (.onlyDependencies)) results
-  FullBuild -> any (isJust . (.fullBuild)) results
+stepsRecording :: [FlavorResult] -> PerCabalStep Bool
+stepsRecording results = tabulateCabalStep' \step
+  -> any (\res -> isJust $ indexCabalStep res.steps step) results
 
-tuiRecording :: RecordResult -> IO ()
+tuiRecording :: [FlavorResult] -> IO ()
 tuiRecording results = do
   let
     !tuiMatrix = tuiMatrixRecording results

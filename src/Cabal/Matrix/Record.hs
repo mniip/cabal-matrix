@@ -1,12 +1,14 @@
 module Cabal.Matrix.Record
-  ( RecordArgs(..)
+  ( RunOptions(..)
   , record
+  , StepResult(..)
+  , FlavorResult(..)
   ) where
 
 import Cabal.Matrix.CabalArgs
+import Cabal.Matrix.Cli
 import Cabal.Matrix.Matrix
 import Cabal.Matrix.ProcessRunner
-import Cabal.Matrix.RecordResult
 import Cabal.Matrix.Rectangle qualified as Rectangle
 import Cabal.Matrix.Scheduler
 import Control.Concurrent
@@ -37,45 +39,12 @@ data StepState = StepState
   , exit :: Maybe ExitCode
   }
 
-mkFlavorResult :: StaticFlavorResult -> PerCabalStep StepState -> FlavorResult
-mkFlavorResult StaticFlavorResult{..} pcs = FlavorResult
-  { flavor
-  , dryRun = mk DryRun
-  , onlyDownload = mk OnlyDownload
-  , onlyDependencies = mk OnlyDependencies
-  , fullBuild = mk FullBuild
-  }
-  where
-    mk step
-      | !state <- indexCabalStep pcs step
-      , !cmdline <- indexCabalStep cmdlines step
-      = do
-        guard state.started
-        exitCode <- exitToInt <$> state.exit
-        let
-          output = map (fmap Text.decodeUtf8Lenient)
-            $ collapseOutput $ reverse state.revOutput
-        pure StepResult{..}
-    exitToInt = \case
-      ExitFailure i -> i
-      ExitSuccess -> 0
-
 collapseOutput :: [(OutputChannel, ByteString)] -> [(OutputChannel, ByteString)]
 collapseOutput = map (\grp -> (fst $ NonEmpty.head grp, foldMap snd grp))
   . NonEmpty.groupBy ((==) `on` fst)
 
-data RecordArgs = RecordArgs
-  { jobs :: Int
-  , options :: [Text]
-  , targets :: [Text]
-  , steps :: PerCabalStep Bool
-  , matrixExpr :: MatrixExpr
-  , mode :: CabalMode
-  }
-
-record :: RecordArgs -> IO RecordResult
-record RecordArgs{..} = do
-  !matrix <- evalMatrixExpr matrixExpr
+record :: Matrix -> RunOptions -> IO [FlavorResult]
+record matrix RunOptions{..} = do
   let
     !flavors = Rectangle.rows matrix
     !statics = arrayFromListN (sizeofArray flavors)
@@ -110,5 +79,33 @@ record RecordArgs{..} = do
 
   takeMVar doneVar
   frozenResults <- traverseArrayP (traverse readIORef) results
-  pure $ RecordResult
-    $ zipWith mkFlavorResult (toList statics) (toList frozenResults)
+  pure $ zipWith mkFlavorResult (toList statics) (toList frozenResults)
+
+-- | The ultimate result of having completed a single step of a single flavor.
+data StepResult = StepResult
+  { cmdline :: NonEmpty Text
+  , output :: [(OutputChannel, Text)]
+  , exitCode :: ExitCode
+  }
+
+data FlavorResult = FlavorResult
+  { flavor :: Map Text Text
+  , steps :: PerCabalStep (Maybe StepResult)
+  }
+
+mkFlavorResult :: StaticFlavorResult -> PerCabalStep StepState -> FlavorResult
+mkFlavorResult StaticFlavorResult{..} pcs = FlavorResult
+  { flavor
+  , steps = tabulateCabalStep' mk
+  }
+  where
+    mk step
+      | !state <- indexCabalStep pcs step
+      , !cmdline <- indexCabalStep cmdlines step
+      = do
+        guard state.started
+        exitCode <- state.exit
+        let
+          output = map (fmap Text.decodeUtf8Lenient)
+            $ collapseOutput $ reverse state.revOutput
+        pure StepResult{..}

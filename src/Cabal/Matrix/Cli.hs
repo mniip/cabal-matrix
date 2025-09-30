@@ -1,5 +1,7 @@
 module Cabal.Matrix.Cli
   ( CliOptions(..)
+  , ExprSource(..)
+  , RunOptions(..)
   , cliParser
   ) where
 
@@ -22,35 +24,148 @@ import Options.Applicative.Help.Pretty
 import Options.Applicative.Types
 
 
-data CliOptions
-  = Builds
-    { jobs :: Int
-    , options :: [Text]
-    , targets :: [Text]
-    , steps :: PerCabalStep Bool
-    , matrixExprOrError :: Either Text MatrixExpr
-    , mode :: CabalMode
-    , recordTo :: Maybe FilePath
-    }
-  | Replay FilePath
+data ExprSource
+  = ExprArgs (Either Text MatrixExpr)
+  | ExprFile FilePath
 
-cliParser :: ParserInfo CliOptions
+data RunOptions = RunOptions
+  { jobs :: Int
+  , steps :: PerCabalStep Bool
+  , options :: [Text]
+  , targets :: [Text]
+  , mode :: CabalMode
+  }
+
+data CliOptions
+  = ExprToExpr
+    { exprSource :: ExprSource
+    , outFile :: FilePath
+    }
+  | ExprToMatrix
+    { exprSource :: ExprSource
+    , outFile :: FilePath
+    }
+  | ExprToRecord
+    { exprSource :: ExprSource
+    , runParams :: RunOptions
+    , outFile :: FilePath
+    }
+  | ExprToTui
+    { exprSource :: ExprSource
+    , runParams :: RunOptions
+    }
+  | MatrixToRecord
+    { matrixFile :: FilePath
+    , runParams :: RunOptions
+    , outFile :: FilePath
+    }
+  | MatrixToTui
+    { matrixFile :: FilePath
+    , runParams :: RunOptions
+    }
+  | RecordToTui
+    { recordFile :: FilePath
+    }
+
+data Source
+  = FromExpr ExprSource
+  | FromMatrix FilePath
+  | FromRecord FilePath
+
+data Target
+  = ToExpr FilePath
+  | ToMatrix FilePath
+  | ToRecord FilePath
+  | ToTui
+
+cliParser :: ParserInfo (Either Text CliOptions)
 cliParser = info (options <**> helper) mempty
   where
-    options
-      = (Builds
-        <$> jobsOption
-        <*> optionsOptions
-        <*> targetsOptions
-        <*> stepsOptions
-        <*> frameOptions
-        <*> modeOption
-        <*> recordOption)
-      <|> (Replay <$> replayOption)
+    options = mkOptions
+      <$> sourceOption
+      <*> optional runOptions
+      <*> targetOption
+    sourceOption = (FromExpr <$> exprSourceOption)
+      <|> (FromMatrix <$> fromMatrixOption)
+      <|> (FromRecord <$> fromRecordOption)
+    exprSourceOption = (ExprArgs <$> frameOptions)
+      <|> (ExprFile <$> exprFileOption)
+    targetOption = (ToExpr <$> toExprOption)
+      <|> (ToMatrix <$> toMatrixOption)
+      <|> (ToRecord <$> toRecordOption)
+      <|> (pure ToTui)
+
+    mkOptions source mRunParams target = case (source, target) of
+      (FromExpr exprSource, ToExpr outFile)
+        -> Right ExprToExpr{..}
+      (FromExpr exprSource, ToMatrix outFile)
+        -> Right ExprToMatrix{..}
+      (FromExpr exprSource, ToRecord outFile) -> case mRunParams of
+        Just runParams -> Right ExprToRecord{..}
+        Nothing -> noRunOptions
+      (FromExpr exprSource, ToTui) -> case mRunParams of
+        Just runParams -> Right ExprToTui{..}
+        Nothing -> noRunOptions
+      (FromMatrix matrixFile, ToRecord outFile) -> case mRunParams of
+        Just runParams -> Right MatrixToRecord{..}
+        Nothing -> noRunOptions
+      (FromMatrix matrixFile, ToTui) -> case mRunParams of
+        Just runParams -> Right MatrixToTui{..}
+        Nothing -> noRunOptions
+      (FromRecord recordFile, ToTui)
+        -> Right RecordToTui{..}
+
+      (FromMatrix _, ToExpr _) -> Left
+        "--from-matrix cannot be used with --to-expr"
+      (FromMatrix _, ToMatrix _) -> Left
+        "--from-matrix cannot be used with --to-matrix"
+      (FromRecord _, ToExpr _) -> Left
+        "--from-record cannot be used with --to-expr"
+      (FromRecord _, ToMatrix _) -> Left
+        "--from-record cannot be used with --to-matrix"
+      (FromRecord _, ToRecord _) -> Left
+        "--from-record cannot be used with --to-record"
+
+    exprFileOption = filesGroup
+      $ option str (long "from-expr" <> metavar "FILE"
+        <> help "Read the expression from FILE previously created by --to-expr")
+    toExprOption = filesGroup
+      $ option str (long "to-expr" <> metavar "FILE"
+        <> help "Instead of running the TUI, resolve the versions in the given \
+          \expression and save it to FILE")
+    fromMatrixOption = filesGroup
+      $ option str (long "from-matrix" <> metavar "FILE"
+        <> help "Load the build matrix from FILE previously created by \
+          \--to-matrix")
+    toMatrixOption = filesGroup
+      $ option str (long "to-matrix" <> metavar "FILE"
+        <> help "Instead of running the TUI, compute the build matrix and save \
+          \it to FILE")
+    fromRecordOption = filesGroup
+      $ option str (long "from-record" <> metavar "FILE"
+        <> help "View the results from FILE previously collected by \
+          \--to-record")
+    toRecordOption = filesGroup
+      $ option str (long "to-record" <> metavar "FILE"
+        <> help "Instead of running the TUI, run the builds and collect their \
+          \results into FILE")
+
+    noRunOptions = Left "-j|--jobs N is required when not using --from-record, \
+      \--to-expr, or --to-matrix"
+    filesGroup = parserOptionGroup "Working with files:"
+
+runOptions :: Parser RunOptions
+runOptions = parserOptionGroup "Running Cabal:" $ RunOptions
+  <$> jobsOption
+  <*> stepsOptions
+  <*> optionsOptions
+  <*> targetsOptions
+  <*> modeOption
+  where
     modeOption = flag ProjectBuild InstallLib (long "install-lib"
       <> help "Use cabal install --lib instead of cabal build, allowing \
         \targeting libraries directly from hackage, without a local project")
-    jobsOption = option auto (long "jobs" <> short 'j'
+    jobsOption = option auto (long "jobs" <> short 'j' <> metavar "N"
       <> help "How many instances of cabal to run concurrently")
     optionsOptions = many $ option str (long "option" <> metavar "--OPTION"
       <> help "Pass an option to cabal in all configurations")
@@ -68,13 +183,6 @@ cliParser = info (options <**> helper) mempty
       <*> flag True False (long "no-full-build"
         <> help "Skip the normal build, where the selected targets are fully \
           \built")
-    recordOption = optional $ option str
-      (long "record" <> metavar "FILE"
-        <> help "Instead of running the TUI, do the builds and collect their \
-          \results into FILE")
-    replayOption = option str
-      (long "from-recording" <> metavar "FILE"
-        <> help "View the results from FILE previously collected by --record")
 
 data MatrixOption
   = OpenParen
@@ -112,7 +220,7 @@ unflatten input = case runStateT (term False) input of
         <> describe OpenParen <> ", got " <> describe opt
       [] -> Left $ "Expecting " <> describeExpr <> " or "
         <> describe OpenParen <> ", got end of input"
-  
+
     describe = \case
       OpenParen -> "open paren (--[)"
       CloseParen -> "closing paren (--])"

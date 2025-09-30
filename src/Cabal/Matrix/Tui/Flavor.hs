@@ -17,7 +17,7 @@ module Cabal.Matrix.Tui.Flavor
 
 import Cabal.Matrix.CabalArgs
 import Cabal.Matrix.ProcessRunner
-import Cabal.Matrix.RecordResult
+import Cabal.Matrix.Record
 import Cabal.Matrix.Scheduler
 import Cabal.Matrix.Tui.Common
 import Data.Bifunctor
@@ -57,9 +57,7 @@ stepFromRecording :: StepResult -> StepState -> StepState
 stepFromRecording result ss = ss
   { started = True
   , revOutput = reverse $ second Text.encodeUtf8 <$> result.output
-  , exit = Just case result.exitCode of
-    0 -> ExitSuccess
-    code -> ExitFailure code
+  , exit = Just result.exitCode
   }
 
 statusColor :: StepState -> Color
@@ -130,16 +128,9 @@ initFlavorState :: PerCabalStep (NonEmpty Text) -> FlavorState
 initFlavorState = fmap initStepState
 
 flavorFromRecording :: FlavorResult -> FlavorState -> FlavorState
-flavorFromRecording result fs = PerCabalStep
-  { dryRun
-    = maybe id stepFromRecording result.dryRun fs.dryRun
-  , onlyDownload
-    = maybe id stepFromRecording result.onlyDownload fs.onlyDownload
-  , onlyDependencies
-    = maybe id stepFromRecording result.onlyDependencies fs.onlyDependencies
-  , fullBuild
-    = maybe id stepFromRecording result.fullBuild fs.fullBuild
-  }
+flavorFromRecording result fs = tabulateCabalStep'
+  \step -> maybe id stepFromRecording
+    (indexCabalStep result.steps step) (indexCabalStep fs step)
 
 flavorHandleSchedulerEvent :: SchedulerMessage -> FlavorState -> FlavorState
 flavorHandleSchedulerEvent ev fs = case ev of

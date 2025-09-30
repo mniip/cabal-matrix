@@ -6,7 +6,6 @@ import Cabal.Matrix.Rectangle qualified as Rectangle
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Data.Traversable
 import Distribution.Client.Config
 import Distribution.Client.GlobalFlags
 import Distribution.Client.IndexUtils
@@ -133,35 +132,9 @@ instance Applicative EvalM where
   EvalWithDB f <*> EvalPure x = EvalWithDB \db -> f db x
   EvalWithDB f <*> EvalWithDB x = EvalWithDB \db -> f db (x db)
 
-evalMatrixExprM :: MatrixExpr -> EvalM Matrix
-evalMatrixExprM = \case
-  TimesExpr m1 m2
-    -> timesMatrix <$> evalMatrixExprM m1 <*> evalMatrixExprM m2
-  AddExpr m1 m2
-    -> addMatrix <$> evalMatrixExprM m1 <*> evalMatrixExprM m2
-  SubtractExpr m1 m2
-    -> subtractMatrix <$> evalMatrixExprM m1 <*> evalMatrixExprM m2
-  SeqExpr m1 m2
-    -> seqMatrix <$> evalMatrixExprM m1 <*> evalMatrixExprM m2
-  UnitExpr
-    -> EvalPure unitMatrix
-  CompilersExpr compilers
-    -> EvalPure $ compilersMatrix compilers
-  PreferExpr values
-    -> EvalPure $ preferMatrix values
-  PackageVersionExpr package versions
-    -> packageVersionMatrix package . concat <$> for versions \case
-      Left version -> pure [version]
-      Right range -> EvalWithDB \db -> packageVersion
-        <$> PackageIndex.lookupDependency db.packageIndex package range
-  CustomUnorderedExpr name values
-    -> EvalPure $ customUnorderedOptions name values
-  CustomOrderedExpr name values
-    -> EvalPure $ customOrderedOptions name values
-
-evalMatrixExpr :: MatrixExpr -> IO Matrix
-evalMatrixExpr expr = case evalMatrixExprM expr of
-  EvalPure matrix -> pure $! matrix
+runEvalM :: EvalM a -> IO a
+runEvalM = \case
+  EvalPure x -> pure $! x
   EvalWithDB f -> withDB \db -> pure $! f db
   where
     withDB :: (SourcePackageDb -> IO a) -> IO a
@@ -170,3 +143,45 @@ evalMatrixExpr expr = case evalMatrixExprM expr of
       withRepoContext verbosity config.savedGlobalFlags \repo -> do
         getSourcePackages verbosity repo >>= k
     verbosity = Verbosity.silent
+
+evalVersionRanges
+  :: PackageName -> [Either Version VersionRange] -> EvalM [Version]
+evalVersionRanges package = fmap concat . traverse \case
+  Left version -> pure [version]
+  Right range -> EvalWithDB \db -> packageVersion
+    <$> PackageIndex.lookupDependency db.packageIndex package range
+
+evalMatrixExpr :: MatrixExpr -> IO Matrix
+evalMatrixExpr = runEvalM . go
+  where
+    go = \case
+      TimesExpr m1 m2 -> timesMatrix <$> go m1 <*> go m2
+      AddExpr m1 m2 -> addMatrix <$> go m1 <*> go m2
+      SubtractExpr m1 m2 -> subtractMatrix <$> go m1 <*> go m2
+      SeqExpr m1 m2 -> seqMatrix <$> go m1 <*> go m2
+      UnitExpr -> EvalPure unitMatrix
+      CompilersExpr compilers -> EvalPure $ compilersMatrix compilers
+      PreferExpr values -> EvalPure $ preferMatrix values
+      PackageVersionExpr package versions
+        -> packageVersionMatrix package <$> evalVersionRanges package versions
+      CustomUnorderedExpr name values
+        -> EvalPure $ customUnorderedOptions name values
+      CustomOrderedExpr name values
+        -> EvalPure $ customOrderedOptions name values
+
+resolveMatrixExpr :: MatrixExpr -> IO MatrixExpr
+resolveMatrixExpr = runEvalM . go
+  where
+    go = \case
+      TimesExpr m1 m2 -> TimesExpr <$> go m1 <*> go m2
+      AddExpr m1 m2 -> AddExpr <$> go m1 <*> go m2
+      SubtractExpr m1 m2 -> SubtractExpr <$> go m1 <*> go m2
+      SeqExpr m1 m2 -> SeqExpr <$> go m1 <*> go m2
+      e@UnitExpr -> pure e
+      e@(CompilersExpr _) -> pure e
+      e@(PreferExpr _) -> pure e
+      PackageVersionExpr package versions
+        -> PackageVersionExpr package . map Left
+          <$> evalVersionRanges package versions
+      e@(CustomUnorderedExpr _ _) -> pure e
+      e@(CustomOrderedExpr _ _) -> pure e
