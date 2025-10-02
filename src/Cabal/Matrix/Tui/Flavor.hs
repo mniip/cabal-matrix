@@ -61,11 +61,11 @@ stepFromRecording result ss = ss
   }
 
 statusColor :: StepState -> Color
-statusColor ss
-  | not ss.started = white
-  | Nothing <- ss.exit = brightYellow
-  | Just ExitSuccess <- ss.exit = brightGreen
-  | Just (ExitFailure _) <- ss.exit = brightRed
+statusColor ss = case ss.exit of
+  _ | not ss.started -> white
+  Nothing -> brightYellow
+  Just ExitSuccess -> brightGreen
+  Just (ExitFailure _) -> brightRed
 
 stepOutputWidget :: DisplayRegion -> StepState -> Image
 stepOutputWidget (width, height) ss = header <-> output
@@ -90,13 +90,13 @@ stepOutputWidget (width, height) ss = header <-> output
           )
         ]
       , resizeWidthFill headerBg ' ' width
-        $ text' (headerBg `withForeColor` brightYellow) "Status: " <|> if
-          | not ss.started -> text' status "Pending"
-          | Nothing <- ss.exit -> text' status "Running"
-          | Just ExitSuccess <- ss.exit -> text' status
-            "Completed successfully"
-          | Just (ExitFailure code) <- ss.exit -> text' status
-            $ "Failed with exit code " <> Text.pack (show code)
+        $ text' (headerBg `withForeColor` brightYellow) "Status: " <|>
+          case ss.exit of
+            _ | not ss.started -> text' status "Pending"
+            Nothing -> text' status "Running"
+            Just ExitSuccess -> text' status "Completed successfully"
+            Just (ExitFailure code) -> text' status
+              $ "Failed with exit code " <> Text.pack (show code)
       , charFill (headerBg `withForeColor` brightYellow) borderEW width 1
       ]
     output = resize width (height - imageHeight header) $ vertCat
