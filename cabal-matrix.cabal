@@ -1,7 +1,26 @@
-cabal-version: 3.0
-name:          cabal-matrix
-version:       0.0.0.0
-build-type:    Simple
+cabal-version:   3.0
+name:            cabal-matrix
+version:         1.0.0.0
+author:          mniip
+maintainer:      mniip
+license:         BSD-3-Clause
+category:        Development
+synopsis:        Matrix builds for cabal
+description:
+  @cabal-matrix@ is a matrix builder for cabal. If you have a cabal project,
+  @cabal-matrix@ lets you specify in a flexible way a list of configurations in
+  which you may want to build your project, such as compiler versions, or
+  dependency version restrictions. It will then run the builds in parallel
+  (locally), and present the results in a TUI table where the specific outcomes
+  can be more closely examined. This is useful for inventing dependency bounds
+  for your package, and verifying that the dependency bounds are correct.
+
+build-type:      Simple
+extra-doc-files: README.md
+
+source-repository HEAD
+  type:     git
+  location: https://github.com/mniip/cabal-matrix.git
 
 common common
   default-language:   GHC2021
@@ -49,11 +68,11 @@ library
   exposed-modules:
     Cabal.Matrix.CabalArgs
     Cabal.Matrix.Cli
+    Cabal.Matrix.Files
     Cabal.Matrix.Main
     Cabal.Matrix.Matrix
     Cabal.Matrix.ProcessRunner
     Cabal.Matrix.Record
-    Cabal.Matrix.Files
     Cabal.Matrix.Rectangle
     Cabal.Matrix.Scheduler
     Cabal.Matrix.Tui
