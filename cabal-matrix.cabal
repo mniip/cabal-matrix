@@ -7,13 +7,13 @@ license:         BSD-3-Clause
 category:        Development
 synopsis:        Matrix builds for cabal
 description:
-  @cabal-matrix@ is a matrix builder for cabal. If you have a cabal project,
-  @cabal-matrix@ lets you specify in a flexible way a list of configurations in
-  which you may want to build your project, such as compiler versions, or
-  dependency version restrictions. It will then run the builds in parallel
-  (locally), and present the results in a TUI table where the specific outcomes
-  can be more closely examined. This is useful for inventing dependency bounds
-  for your package, and verifying that the dependency bounds are correct.
+  @cabal-matrix@ is a matrix builder for cabal. It lets you specify in a
+  flexible way a list of configurations in which something can be built, such as
+  compiler versions, or dependency version restrictions. It will then run the
+  builds in parallel (locally), and present the results in a TUI table where the
+  specific outcomes can be more closely examined. This is useful for inventing
+  and correcting dependency bounds for your package, as well as finding
+  dependency issues in other packages and fixing them.
 
 build-type:      Simple
 extra-doc-files: README.md
