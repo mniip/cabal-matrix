@@ -15,6 +15,7 @@ description:
   and correcting dependency bounds for your package, as well as finding
   dependency issues in other packages and fixing them.
 
+homepage:        https://github.com/mniip/cabal-matrix
 build-type:      Simple
 extra-doc-files: README.md
 
