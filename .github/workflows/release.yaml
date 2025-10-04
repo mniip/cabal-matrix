@@ -5,6 +5,9 @@ on:
     types:
       - prereleased
 
+permissions:
+  contents: write
+
 jobs:
   sdist:
     runs-on: ubuntu-latest
@@ -23,7 +26,7 @@ jobs:
         with:
           name: Source tarball
           path: ${{ env.dist }}
-      - uses: svenstaro/upload-release-action@2.2.1
+      - uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: ${{ env.dist }}
