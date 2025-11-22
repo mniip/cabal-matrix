@@ -141,46 +141,67 @@ appHandleSchedulerMessage ev ast = case ev of
 appHandleEvent
   :: TuiMatrix
   -> PerCabalStep Bool
+  -> Maybe SchedulerHandle
   -> AppEvent
   -> AppState
-  -> Maybe AppState
-appHandleEvent matrix enabledSteps aev ast = case aev of
-  AppTimerEvent ev -> Just ast
+  -> IO (Maybe AppState)
+appHandleEvent matrix enabledSteps mScheduler aev ast = case aev of
+  AppTimerEvent ev -> pure $ Just ast
     { flavorStates = IntMap.map (flavorHandleTimerEvent ev) ast.flavorStates }
   VtyEvent (EvKey (isExitKey -> True) _)
     | Just _ <- ast.openedCell
-    -> Just ast { openedCell = Nothing }
+    -> pure $ Just ast { openedCell = Nothing }
     | Just _ <- ast.headerEditor
-    -> Just ast { headerEditor = Nothing }
+    -> pure $ Just ast { headerEditor = Nothing }
     | Nothing <- ast.headerEditor
-    -> Nothing
+    -> pure Nothing
   VtyEvent ev
     | Just (flavorIndex, os) <- ast.openedCell
-    -> Just ast
-      { openedCell = Just (flavorIndex, outputHandleEvent enabledSteps ev os) }
+    -> case ev of
+      EvKey (KChar 'c') (elem MCtrl -> True) -> do
+        for_ mScheduler $ flip signalScheduler InterruptFlavor { flavorIndex }
+        pure $ Just ast
+      EvKey (KChar '\\') (elem MCtrl -> True) -> do
+        for_ mScheduler $ flip signalScheduler TerminateFlavor { flavorIndex }
+        pure $ Just ast
+      EvKey (KChar 'p') _ -> do
+        for_ mScheduler $ flip signalScheduler PrioritizeFlavor { flavorIndex }
+        pure $ Just ast
+      _ -> pure $ Just ast
+        { openedCell = Just (flavorIndex, outputHandleEvent enabledSteps ev os)
+        }
     | Just headerEditor <- ast.headerEditor
     , (headerEditor', headers')
       <- headerEditorHandleEvent matrix ev (headerEditor, ast.headers)
-    -> Just ast
+    -> pure $ Just ast
       { headers = headers'
       , headerEditor = Just headerEditor'
       , layout = mkTableLayout headers'
       }
   VtyEvent (EvKey (KChar 'x') _)
-    -> Just ast { headerEditor = Just initHeaderEditorState }
+    -> pure $ Just ast { headerEditor = Just initHeaderEditorState }
   VtyEvent (EvKey (isEnterKey -> True) _)
-    | ast.table.activeSelection == SelectionNormal
-    , ast.table.normalSelectionCol < sizeofArray
-      (Rectangle.rows ast.headers.horizontalHeader)
-    , ast.table.normalSelectionRow < sizeofArray
-      (Rectangle.rows ast.headers.verticalHeader)
-    , Just flavorIndex <- Rectangle.indexCell ast.headers.gridToFlavor
-      ast.table.normalSelectionCol ast.table.normalSelectionRow
+    | Just flavorIndex <- astSelectedCell ast
     , Just fs <- IntMap.lookup flavorIndex ast.flavorStates
-    -> Just ast { openedCell = Just (flavorIndex, initOutputState fs)}
-    | otherwise -> Just ast
+    -> pure $ Just ast { openedCell = Just (flavorIndex, initOutputState fs) }
+    | otherwise -> pure $ Just ast
+  VtyEvent (EvKey (KChar 'c') (elem MCtrl -> True))
+    | Just flavorIndex <- astSelectedCell ast
+    -> do
+      for_ mScheduler $ flip signalScheduler InterruptFlavor { flavorIndex }
+      pure $ Just ast
+  VtyEvent (EvKey (KChar '\\') (elem MCtrl -> True))
+    | Just flavorIndex <- astSelectedCell ast
+    -> do
+      for_ mScheduler $ flip signalScheduler TerminateFlavor { flavorIndex }
+      pure $ Just ast
+  VtyEvent (EvKey (KChar 'p') _)
+    | Just flavorIndex <- astSelectedCell ast
+    -> do
+      for_ mScheduler $ flip signalScheduler PrioritizeFlavor { flavorIndex }
+      pure $ Just ast
   VtyEvent ev
-    -> Just ast
+    -> pure $ Just ast
       { table = tableHandleEvent (mkTableMeta ast.headers) ev ast.table }
   where
     isExitKey = \case
@@ -192,24 +213,35 @@ appHandleEvent matrix enabledSteps aev ast = case aev of
       KEnter -> True
       _ -> False
 
+astSelectedCell :: AppState -> Maybe FlavorIndex
+astSelectedCell ast = do
+  guard $ ast.table.activeSelection == SelectionNormal
+  guard $ ast.table.normalSelectionCol < sizeofArray
+    (Rectangle.rows ast.headers.horizontalHeader)
+  guard $ ast.table.normalSelectionRow < sizeofArray
+    (Rectangle.rows ast.headers.verticalHeader)
+  Rectangle.indexCell ast.headers.gridToFlavor
+    ast.table.normalSelectionCol ast.table.normalSelectionRow
+
 appKeybinds :: AppState -> [(Text, Text)]
 appKeybinds ast
   | Just _ <- ast.openedCell
-  = [("<Esc>/Q", "back")] <> outputKeybinds
+  = [("<Esc>/Q", "back")] <> outputKeybinds <>
+    [ ("^C", "interrupt")
+    , ("^\\", "terminate")
+    , ("P", "prioritize")
+    ]
   | Just _ <- ast.headerEditor
   = [("<Esc>/Q", "back")] <> headerEditorKeybinds
   | otherwise
-  = (if
-      | ast.table.activeSelection == SelectionNormal
-      , ast.table.normalSelectionCol < sizeofArray
-        (Rectangle.rows ast.headers.horizontalHeader)
-      , ast.table.normalSelectionRow < sizeofArray
-        (Rectangle.rows ast.headers.verticalHeader)
-      , Just _ <- Rectangle.indexCell ast.headers.gridToFlavor
-        ast.table.normalSelectionCol ast.table.normalSelectionRow
-      -> [("<Enter>/<Space>", "output")]
-      | otherwise
-      -> [])
+  = (if isJust (astSelectedCell ast)
+      then
+        [ ("<Enter>/<Space>", "output")
+        , ("^C", "interrupt")
+        , ("^\\", "terminate")
+        , ("P", "prioritize")
+        ]
+      else [])
     <> [("<Esc>/Q", "quit")]
     <> [("X", "axes")]
     <> tableKeybinds
@@ -223,8 +255,9 @@ tuiMainLoop
   -> AppState
   -> PerCabalStep Bool
   -> TBQueue (Either SchedulerMessage AppEvent)
+  -> Maybe SchedulerHandle
   -> IO ()
-tuiMainLoop tuiMatrix ast0 steps queue = do
+tuiMainLoop tuiMatrix ast0 steps queue mScheduler = do
   vty <- mkVty defaultConfig
 
   _ <- forkIO $ forever do
@@ -239,7 +272,7 @@ tuiMainLoop tuiMatrix ast0 steps queue = do
 
     go !ast = atomically (readTBQueue queue) >>= \case
       Left msg -> go (appHandleSchedulerMessage msg ast)
-      Right ev -> case appHandleEvent tuiMatrix steps ev ast of
+      Right ev -> appHandleEvent tuiMatrix steps mScheduler ev ast >>= \case
         Just ast' -> goDisplay ast'
         Nothing -> vty.shutdown
 
@@ -261,10 +294,11 @@ tuiLive matrix options = do
   _ <- forkIO $ forever do
     threadDelay 100000
     atomically . writeTBQueue queue . Right . AppTimerEvent $ TimerEvent
-  _hdl <- startScheduler schedulerConfig flavors
+  scheduler <- startScheduler schedulerConfig flavors
     (atomically . writeTBQueue queue . Left)
 
   tuiMainLoop tuiMatrix (initAppState tuiMatrix) options.steps queue
+    (Just scheduler)
 
   -- TODO: should probably kill the processes in _hdl
 
@@ -306,4 +340,4 @@ tuiRecording results = do
 
   tuiMainLoop tuiMatrix
     (addOutputFromRecording results $ initAppState tuiMatrix)
-    steps queue
+    steps queue Nothing
