@@ -73,6 +73,7 @@ startProcess cmdline cb = mask_ do
       cmd :| args -> (Process.proc cmd args)
         { Process.std_out = Process.CreatePipe
         , Process.std_err = Process.CreatePipe
+        , Process.create_group = True
         }
   _ <- forkIOWithUnmask \unmask -> do
     for_ mOut (\out -> unmask $ readLoop out Stdout)

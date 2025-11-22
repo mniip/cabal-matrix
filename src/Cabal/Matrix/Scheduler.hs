@@ -130,7 +130,7 @@ startScheduler input flavors cb = do
           pure
             ( state
               { processes
-                = Map.update (\_ -> mProcess) flavorIndex state.processes
+                = Map.alter (\_ -> mProcess) flavorIndex state.processes
               , queue = queue'
               }
             , False
@@ -178,26 +178,25 @@ startScheduler input flavors cb = do
         takeMVar stdoutClosed
         takeMVar stderrClosed
         cb OnStepFinished { flavorIndex, step, exitCode }
-        case exitCode of
-          ExitFailure _ -> doneWithFlavor
-          ExitSuccess -> modifyMVar_ mvar \state
+        modifyMVar_ mvar \state -> case exitCode of
+          ExitSuccess
             -- It's possible that an interrupt signal has been received after
             -- the process has already exited (successfully), but before we got
             -- the 'OnProcessExit' message. So we must check this flag to see if
             -- we shouldn't start subsequent steps.
-            -> if flavorIndex `Set.member` state.stopRequested
-              then do
-                doneWithFlavor
-                pure state
-                  { processes = Map.delete flavorIndex state.processes
-                  , stopRequested = Set.delete flavorIndex state.stopRequested
-                  }
-              else do
-                mProcess <- startSteps flavorIndex nextSteps
-                pure state
-                  { processes
-                    = Map.update (\_ -> mProcess) flavorIndex state.processes
-                  }
+            | flavorIndex `Set.notMember` state.stopRequested
+            -> do
+              mProcess <- startSteps flavorIndex nextSteps
+              pure state
+                { processes
+                  = Map.alter (\_ -> mProcess) flavorIndex state.processes
+                }
+          _ -> do
+            doneWithFlavor
+            pure state
+              { processes = Map.delete flavorIndex state.processes
+              , stopRequested = Set.delete flavorIndex state.stopRequested
+              }
 
     waitForDone :: IO ()
     waitForDone = do
