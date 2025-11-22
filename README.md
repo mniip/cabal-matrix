@@ -310,3 +310,38 @@ Other configurations may become `build ok`, meaning the constraint could be
 relaxed to include those. Finally, some `no plan`s may remain as such, meaning
 the configuration was excluded for some other reason. You can read the `no plan`
 output to find out in more detail.
+
+# Validating Hackage Revisions
+
+If you have a hackage revision that you would like to apply, you can see how it
+would affect the build plans by using a `--constraints` option with an
+implication constraint. If as in the above example, we would like to revise
+`tar >=0.6.4.0 && <=0.7.0.0` to include tighten the bound on `directory` to
+`>=1.3.8`, we can do so with:
+```sh
+cabal-matrix -j1 --blank-project tar \
+  --option --index-state=2025-10-01T00:00:00Z \
+  --compiler ghc-9.2.8 \
+  --times \
+  --package tar=">=0.6" \
+  --times \
+  --package directory=">=1.3" \
+  --times \
+  --constraints "tar >=0.6.4.0 && <=0.7.0.0 :- directory >=1.3.8"
+```
+
+Note that `--constraints` acts as a singleton list, so it needs to be
+`--times`'ed with the rest of the build matrix. This allows, if necessary, to
+apply different fixes to different parts of the build matrix.
+
+This implication constraint will work even when we're not directly enumerating
+every `tar` or `directory` version, and even when neither of them is our build
+target. So if you're trying to build your package `foo`, and encouter a
+`deps fail` because of e.g. `tar`/`directory`, after figuring out which versions
+of `tar` and `directory` are conflicting, you can get back to building your
+`foo` package by adding the same
+`--constraints "tar >=0.6.4.0 && <=0.7.0.0 :- directory >=1.3.8"` option to your
+build.
+
+Note that there's currently no easy way to preview a revision that *relaxes* a
+constraint.
