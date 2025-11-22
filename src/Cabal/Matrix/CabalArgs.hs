@@ -119,7 +119,12 @@ data CabalMode
 data Constraint = Constraint
   { package :: PackageName
   , versions :: VersionRange
-  } deriving stock (Eq, Ord, Show, Generic)
+  } deriving stock (Eq, Show, Generic)
+
+-- Cabal-syntax 3.8 doesn't have @Ord Constraint@
+instance Ord Constraint where
+  compare c1 c2 = compare c1.package c2.package
+    <> compare (prettyShow c1.versions) (prettyShow c2.versions)
 
 instance Hashable Constraint where
   hashWithSalt salt constr = salt
