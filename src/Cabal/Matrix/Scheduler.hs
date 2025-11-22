@@ -84,8 +84,14 @@ data SchedulerSignal
     { flavorIndex :: FlavorIndex
     } -- ^ Move the given flavor the front of the priority queue, if it hasn't
       -- been started yet
+  | RestartFlavor
+    { flavorIndex :: FlavorIndex
+    }
 
-newtype SchedulerHandle = SchedulerHandle (MVar SchedulerState)
+data SchedulerHandle = SchedulerHandle
+  { state :: MVar SchedulerState
+  , queueFilled :: MVar ()
+  }
 
 data SchedulerState = SchedulerState
   { processes :: Map FlavorIndex ProcessHandle
@@ -111,16 +117,17 @@ startScheduler
   -> IO SchedulerHandle
 startScheduler input flavors cb = do
   sem <- newQSem input.jobs
-  mvar <- newMVar SchedulerState
+  stateVar <- newMVar SchedulerState
     { processes = Map.empty
     , stopRequested = Set.empty
     , queue = [0 .. sizeofArray flavors - 1]
     }
+  queueVar <- newEmptyMVar
   let
     waitForNext :: IO ()
     waitForNext = do
       waitQSem sem
-      done <- modifyMVar mvar \state -> case state.queue of
+      done <- modifyMVar stateVar \state -> case state.queue of
         [] -> do
           doneWithFlavor
           pure (state, True)
@@ -178,7 +185,7 @@ startScheduler input flavors cb = do
         takeMVar stdoutClosed
         takeMVar stderrClosed
         cb OnStepFinished { flavorIndex, step, exitCode }
-        modifyMVar_ mvar \state -> case exitCode of
+        modifyMVar_ stateVar \state -> case exitCode of
           ExitSuccess
             -- It's possible that an interrupt signal has been received after
             -- the process has already exited (successfully), but before we got
@@ -203,13 +210,20 @@ startScheduler input flavors cb = do
       -- Once the queue has become empty, wait for all running jobs to finish
       replicateM_ input.jobs $ waitQSem sem
       cb OnDone
+      -- Restart the process if someone touches the queueVar
+      takeMVar queueVar
+      replicateM_ input.jobs $ signalQSem sem
+      waitForNext
 
   _ <- forkIO waitForNext
-  pure $ SchedulerHandle mvar
+  pure $ SchedulerHandle
+    { state = stateVar
+    , queueFilled = queueVar
+    }
 
 signalScheduler :: SchedulerHandle -> SchedulerSignal -> IO ()
-signalScheduler (SchedulerHandle mvar) = \case
-  InterruptFlavor{ flavorIndex } -> modifyMVar_ mvar \state -> if
+signalScheduler hdl = \case
+  InterruptFlavor{ flavorIndex } -> modifyMVar_ hdl.state \state -> if
     | flavorIndex `elem` state.queue
     -> pure state { queue = delete flavorIndex state.queue }
     | Just processHdl <- Map.lookup flavorIndex state.processes
@@ -218,7 +232,7 @@ signalScheduler (SchedulerHandle mvar) = \case
       pure state { stopRequested = Set.insert flavorIndex state.stopRequested }
     | otherwise
     -> pure state
-  TerminateFlavor{ flavorIndex } -> modifyMVar_ mvar \state -> if
+  TerminateFlavor{ flavorIndex } -> modifyMVar_ hdl.state \state -> if
     | flavorIndex `elem` state.queue
     -> pure state { queue = delete flavorIndex state.queue }
     | Just processHdl <- Map.lookup flavorIndex state.processes
@@ -227,9 +241,17 @@ signalScheduler (SchedulerHandle mvar) = \case
       pure state { stopRequested = Set.insert flavorIndex state.stopRequested }
     | otherwise
     -> pure state
-  PrioritizeFlavor{ flavorIndex } -> modifyMVar_ mvar \state -> if
+  PrioritizeFlavor{ flavorIndex } -> modifyMVar_ hdl.state \state -> if
     | flavorIndex `elem` state.queue
     -> pure state { queue = flavorIndex : delete flavorIndex state.queue }
       -- ^ TODO: leak? we accumulate 'delete' thunks?
     | otherwise
     -> pure state
+  RestartFlavor{ flavorIndex } -> do
+    modifyMVar_ hdl.state \state -> if
+      | flavorIndex `notElem` state.queue
+      , flavorIndex `Map.notMember` state.processes
+      -> pure state { queue = flavorIndex : state.queue }
+      | otherwise
+      -> pure state
+    void $ tryPutMVar hdl.queueFilled ()

@@ -10,6 +10,7 @@
   - interrupted with Ctrl+C
   - terminated with Ctrl+\
   - prioritized with P
+  - restarted with R
 
 # 1.0.0.0
 

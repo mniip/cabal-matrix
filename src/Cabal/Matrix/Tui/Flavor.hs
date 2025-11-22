@@ -110,7 +110,10 @@ data TimerEvent = TimerEvent
 
 stepHandleSchedulerEvent :: SchedulerMessage -> StepState -> StepState
 stepHandleSchedulerEvent ev ss = case ev of
-  OnStepStarted{} -> ss { started = True }
+  OnStepStarted{} -> ss
+    { started = True
+    , exit = Nothing -- in case this is a restart
+    }
   OnStepFinished{ exitCode } -> ss { exit = Just exitCode }
   OnOutput{ channel, output } -> ss
     { revOutput = (channel, output):ss.revOutput

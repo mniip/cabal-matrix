@@ -167,6 +167,9 @@ appHandleEvent matrix enabledSteps mScheduler aev ast = case aev of
       EvKey (KChar 'p') _ -> do
         for_ mScheduler $ flip signalScheduler PrioritizeFlavor { flavorIndex }
         pure $ Just ast
+      EvKey (KChar 'r') _ -> do
+        for_ mScheduler $ flip signalScheduler RestartFlavor { flavorIndex }
+        pure $ Just ast
       _ -> pure $ Just ast
         { openedCell = Just (flavorIndex, outputHandleEvent enabledSteps ev os)
         }
@@ -200,6 +203,11 @@ appHandleEvent matrix enabledSteps mScheduler aev ast = case aev of
     -> do
       for_ mScheduler $ flip signalScheduler PrioritizeFlavor { flavorIndex }
       pure $ Just ast
+  VtyEvent (EvKey (KChar 'r') _)
+    | Just flavorIndex <- astSelectedCell ast
+    -> do
+      for_ mScheduler $ flip signalScheduler RestartFlavor { flavorIndex }
+      pure $ Just ast
   VtyEvent ev
     -> pure $ Just ast
       { table = tableHandleEvent (mkTableMeta ast.headers) ev ast.table }
@@ -230,6 +238,7 @@ appKeybinds ast
     [ ("^C", "interrupt")
     , ("^\\", "terminate")
     , ("P", "prioritize")
+    , ("R", "restart")
     ]
   | Just _ <- ast.headerEditor
   = [("<Esc>/Q", "back")] <> headerEditorKeybinds
@@ -240,6 +249,7 @@ appKeybinds ast
         , ("^C", "interrupt")
         , ("^\\", "terminate")
         , ("P", "prioritize")
+        , ("R", "restart")
         ]
       else [])
     <> [("<Esc>/Q", "quit")]
