@@ -264,10 +264,11 @@ frameOptions = parserOptionGroup "Specifying configurations:"
           (long "compiler" <> short 'w' <> metavar "COMPILER1,COMPILER2,..."
             <> help "Specify a comma-separated list of compilers")
         , Expr "--package" . uncurry PackageVersionExpr <$> option readPackage
-          (long "package" <> metavar "PACKAGE=VERSION1,VERSION2,..."
+          (long "package" <> metavar "PACKAGE[=VERSION1,VERSION2,...]"
             <> help "Specify a comma-separated list of versions of a given \
               \package. Each version can instead be a version range such as \
-              \'>=1.0 && <2.0'")
+              \'>=1.0 && <2.0'. If only the package name is specified, all \
+              \its versions are tried.")
         , Expr "--prefer" . PreferExpr <$> option readPrefer
           (long "prefer" <> metavar "[newest],[oldest]"
             <> help "Specify whether to try newest or oldest versions of \
@@ -324,10 +325,14 @@ readPrefer = commaSeparated $ maybeReader \(map toLower . strip -> s) -> if
   | s `elem` ["oldest", "older", "old"] -> Just PreferOldest
   | otherwise -> Nothing
 
-readPackage :: ReadM (PackageName, [Either Version VersionRange])
-readPackage = byEquals
-  (mkPackageName . strip <$> str)
-  (commaSeparated versionOrRange)
+readPackage :: ReadM (PackageName, VersionExpr)
+readPackage = do
+  s <- readerAsk
+  if '=' `elem` s
+  then byEquals
+    (mkPackageName . strip <$> str)
+    (SomeVersions <$> commaSeparated versionOrRange)
+  else ((, AllVersions) . mkPackageName . strip <$> str)
   where
     versionOrRange = ReadM $ ReaderT \s -> case eitherParsec @Version s of
       Right ver -> pure $ Left ver

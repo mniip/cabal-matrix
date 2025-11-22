@@ -82,7 +82,9 @@ instance ToJSON MatrixExprJSON where
           ]
         PackageVersionExpr packageName versions -> object
           [ "package" .= unPackageName packageName
-          , "versions" .= toJSON (VersionJSON <$> versions)
+          , "versions" .= case versions of
+            AllVersions -> Null
+            SomeVersions verList -> toJSON (VersionJSON <$> verList)
           ]
         CustomUnorderedExpr key options -> object
           [ "custom_unordered" .= key
@@ -125,18 +127,14 @@ instance FromJSON MatrixExprJSON where
       , (o .:? "compilers") <&> fmap @Maybe (CompilersExpr . map Compiler)
       , (o .:? "prefer") <&> fmap @Maybe
         (PreferExpr . map \(PreferJSON value) -> value)
-      , do
-        mPackage <- o .:? "package"
-        mVersions <- o .:? "versions"
-        case (mPackage, mVersions) of
-          (Nothing, Nothing) -> pure Nothing
-          (Just package, Just versions) -> pure $ Just $ PackageVersionExpr
-            (mkPackageName package)
-            (versions <&> \(VersionJSON version) -> version)
-          (Nothing, Just _) -> fail
-            "Expected \"versions\" to be accompanied by \"package\""
-          (Just _, Nothing) -> fail
-            "Expected \"package\" to be accompanied by \"versions\""
+      , o .:? "package" >>= \case
+        Nothing -> pure Nothing
+        Just package -> do
+          versions <- o .:? "versions" <&> \case
+            Nothing -> AllVersions
+            Just versions -> SomeVersions
+              $ versions <&> \(VersionJSON version) -> version
+          pure $ Just $ PackageVersionExpr (mkPackageName package) versions
       , o .:? "custom_unordered" >>= \case
         Nothing -> pure Nothing
         Just key -> o .:? "options" >>= \case

@@ -6,6 +6,7 @@ import Cabal.Matrix.Rectangle qualified as Rectangle
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Traversable
 import Distribution.Client.Config
 import Distribution.Client.GlobalFlags
 import Distribution.Client.IndexUtils
@@ -105,6 +106,10 @@ customOrderedOptions name options = Rectangle.vertical name
     )
   ]
 
+data VersionExpr
+  = AllVersions
+  | SomeVersions [Either Version VersionRange]
+
 -- | An unevaluated build matrix expression. Matrices can contain exponentially
 -- many rows in the worst case, so it makes sense to delay converting into an
 -- evaluated representation.
@@ -116,7 +121,7 @@ data MatrixExpr
   | UnitExpr
   | CompilersExpr [Compiler]
   | PreferExpr [Prefer]
-  | PackageVersionExpr PackageName [Either Version VersionRange]
+  | PackageVersionExpr PackageName VersionExpr
   | CustomUnorderedExpr Text [Text]
   | CustomOrderedExpr Text [Text]
 
@@ -145,11 +150,14 @@ runEvalM = \case
     verbosity = Verbosity.silent
 
 evalVersionRanges
-  :: PackageName -> [Either Version VersionRange] -> EvalM [Version]
-evalVersionRanges package = fmap concat . traverse \case
-  Left version -> pure [version]
-  Right range -> EvalWithDB \db -> packageVersion
-    <$> PackageIndex.lookupDependency db.packageIndex package range
+  :: PackageName -> VersionExpr -> EvalM [Version]
+evalVersionRanges package = \case
+  AllVersions -> EvalWithDB \db -> packageVersion
+    <$> PackageIndex.lookupDependency db.packageIndex package anyVersion
+  SomeVersions versions -> concat <$> for versions \case
+    Left version -> pure [version]
+    Right range -> EvalWithDB \db -> packageVersion
+      <$> PackageIndex.lookupDependency db.packageIndex package range
 
 evalMatrixExpr :: MatrixExpr -> IO Matrix
 evalMatrixExpr = runEvalM . go
@@ -181,7 +189,7 @@ resolveMatrixExpr = runEvalM . go
       e@(CompilersExpr _) -> pure e
       e@(PreferExpr _) -> pure e
       PackageVersionExpr package versions
-        -> PackageVersionExpr package . map Left
+        -> PackageVersionExpr package . SomeVersions . map Left
           <$> evalVersionRanges package versions
       e@(CustomUnorderedExpr _ _) -> pure e
       e@(CustomOrderedExpr _ _) -> pure e
