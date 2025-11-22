@@ -17,7 +17,9 @@ description:
 
 homepage:        https://github.com/mniip/cabal-matrix
 build-type:      Simple
-extra-doc-files: README.md
+extra-doc-files:
+  CHANGELOG.md
+  README.md
 
 source-repository HEAD
   type:     git
