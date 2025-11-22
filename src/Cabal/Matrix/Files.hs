@@ -17,6 +17,7 @@ import Data.Aeson.Encoding qualified as Encoding
 import Data.Aeson.Types
 import Data.Foldable
 import Data.Functor
+import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe
@@ -66,18 +67,11 @@ instance ToJSON MatrixExprJSON where
   toJSON (MatrixExprJSON e) = go e
     where
       go = \case
-        TimesExpr x y -> object
-          [ "times" .= toJSON (MatrixExprJSON x, MatrixExprJSON y)
-          ]
-        AddExpr x y -> object
-          [ "add" .= toJSON (MatrixExprJSON x, MatrixExprJSON y)
-          ]
-        SubtractExpr x y -> object
-          [ "subtract" .= toJSON (MatrixExprJSON x, MatrixExprJSON y)
-          ]
-        SeqExpr x y -> object
-          [ "seq" .= toJSON (MatrixExprJSON x, MatrixExprJSON y)
-          ]
+        -- Format TimesExpr (TimesExpr ... e2) e1 as {"times":[...,e2,e1]}
+        TimesExpr x y -> goTimes x [MatrixExprJSON y]
+        AddExpr x y -> goAdd x [MatrixExprJSON y]
+        SubtractExpr x y -> goSubtract x [MatrixExprJSON y]
+        SeqExpr x y -> goSeq x [MatrixExprJSON y]
         UnitExpr -> "unit"
         CompilersExpr compilers -> object
           [ "compilers" .= toJSON
@@ -98,6 +92,22 @@ instance ToJSON MatrixExprJSON where
           [ "custom_ordered" .= key
           , "options" .= toJSON options
           ]
+      goTimes (TimesExpr x y) ys = goTimes x (MatrixExprJSON y : ys)
+      goTimes y xs = object
+        [ "times" .= toJSON (MatrixExprJSON y : xs)
+        ]
+      goAdd (AddExpr x y) ys = goAdd x (MatrixExprJSON y : ys)
+      goAdd y xs = object
+        [ "add" .= toJSON (MatrixExprJSON y : xs)
+        ]
+      goSubtract (SubtractExpr x y) ys = goSubtract x (MatrixExprJSON y : ys)
+      goSubtract y xs = object
+        [ "subtract" .= toJSON (MatrixExprJSON y : xs)
+        ]
+      goSeq (SeqExpr x y) ys = goSeq x (MatrixExprJSON y : ys)
+      goSeq y xs = object
+        [ "seq" .= toJSON (MatrixExprJSON y : xs)
+        ]
 
 instance FromJSON MatrixExprJSON where
   parseJSON (String "unit") = pure $ MatrixExprJSON UnitExpr
@@ -105,13 +115,13 @@ instance FromJSON MatrixExprJSON where
   parseJSON (Object o) = do
     parses <- sequenceA
       [ (o .:? "times") <&> fmap @Maybe
-        \(MatrixExprJSON x, MatrixExprJSON y) -> TimesExpr x y
+        (foldl1 @NonEmpty TimesExpr . fmap \(MatrixExprJSON x) -> x)
       , (o .:? "add") <&> fmap @Maybe
-        \(MatrixExprJSON x, MatrixExprJSON y) -> AddExpr x y
+        (foldl1 @NonEmpty AddExpr . fmap \(MatrixExprJSON x) -> x)
       , (o .:? "subtract") <&> fmap @Maybe
-        \(MatrixExprJSON x, MatrixExprJSON y) -> SubtractExpr x y
+        (foldl1 @NonEmpty SubtractExpr . fmap \(MatrixExprJSON x) -> x)
       , (o .:? "seq") <&> fmap @Maybe
-        \(MatrixExprJSON x, MatrixExprJSON y) -> SeqExpr x y
+        (foldl1 @NonEmpty SeqExpr . fmap \(MatrixExprJSON x) -> x)
       , (o .:? "compilers") <&> fmap @Maybe (CompilersExpr . map Compiler)
       , (o .:? "prefer") <&> fmap @Maybe
         (PreferExpr . map \(PreferJSON value) -> value)
