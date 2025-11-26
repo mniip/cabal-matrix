@@ -42,7 +42,7 @@ version bounds in the cabal file, because you're not sure which to put. To
 figure this out, we can simply try building our package with each version of
 `bytestring` and see if it works or not! This can be achieved by running:
 ```sh
-cabal-matrix -j1 foo --package bytestring=">= 0"
+cabal-matrix -j1 foo --package bytestring
 ```
 
 This may take a while to complete, and you can try using a higher value of `-j`
@@ -90,7 +90,7 @@ can verify that these bounds are not too loose. Suppose your bounds were
 ```sh
 cabal-matrix -j1 foo --package bytestring=">=0.11.4 && <0.13"
 ```
-You could even run the same command as before (`bytestring=">= 0"`), but this
+You could even run the same command as before (`--package bytestring`), but this
 will save time (and table space!) by not focusing on configurations that are
 definitely outside the possible range.
 
@@ -221,32 +221,31 @@ with `cabal-matrix` too.
 
 You could run e.g.:
 ```sh
-cabal-matrix -j1 text --package text=">=0" --times --package bytestring=">=0"
+cabal-matrix -j1 text --package text --times --package bytestring
 ```
 to try every `text` version against every `bytestring` version. However if
 you're running this from your project folder, then the constraints coming from
 your project's packages will prevent some versions from being available,
 possibly masking some `build fail`s as `no plan`s.
 
-Instead you can move out of your project folder into a temporary directory, and
-use `--install-lib`:
+Instead you can ask `cabal-matrix` to create a blank project for building `text`
+using `--blank-project`:
 ```sh
-cd /tmp
-cabal-matrix -j1 --install-lib text \
-  --package text=">=0" --times --package bytestring=">=0"
+cabal-matrix -j1 --blank-project text \
+  --package text --times --package bytestring
 ```
 
 For a typical yet concrete example, we can time travel to the past using
 `--option --index-state=2025-10-01T00:00:00Z`, and try building `tar` against
 `directory`:
 ```sh
-cabal-matrix -j1 --install-lib tar \
+cabal-matrix -j1 --blank-project tar \
   --option --index-state=2025-10-01T00:00:00Z \
   --compiler ghc-9.2.8 \
   --times \
-  --package tar='>=0.6' \
+  --package tar=">=0.6" \
   --times \
-  --package directory='>=1.3'
+  --package directory=">=1.3"
 ```
 
 There is a clear cut corner of `build fail`s at `tar >=0.6.4` and
@@ -299,7 +298,7 @@ If you have dependency bounds, but you're unsure if they're too tight and
 can/should be relaxed, you can forward (using `--option`) `--allow-newer` and
 `--allow-older` to cabal:
 ```sh
-cabal-matrix -j1 foo --package bytestring=">= 0" \
+cabal-matrix -j1 foo --package bytestring \
   --option --allow-newer=foo:bytestring --option --allow-older=foo:bytestring
 ```
 This will tell cabal to ignore the `build-depends` constraints that your package
