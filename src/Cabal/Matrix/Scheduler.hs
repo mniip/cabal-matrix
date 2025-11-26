@@ -21,10 +21,8 @@ module Cabal.Matrix.Scheduler
 import Cabal.Matrix.CabalArgs
 import Cabal.Matrix.ProcessRunner
 import Control.Concurrent
-import Control.Exception.Safe
 import Control.Monad
 import Data.ByteString (ByteString)
-import Data.Foldable
 import Data.List
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -32,7 +30,6 @@ import Data.Primitive
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
-import System.Directory
 import System.Exit
 
 
@@ -158,7 +155,7 @@ startScheduler input flavors cb = do
         stderrClosed <- newEmptyMVar
         cb OnStepStarted { flavorIndex, step }
         let args = mkCabalArgs input step (indexArray flavors flavorIndex)
-        for_ (environmentFilePath args) $ void . try @_ @IOError . removeFile
+        prepareFilesForCabal args
         startProcess (renderCabalArgs args)
           (reactStep flavorIndex step nextSteps stdoutClosed stderrClosed)
 

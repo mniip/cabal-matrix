@@ -1,3 +1,15 @@
+# Next
+
+- `--blank-project` is a new mode for building packages directly from hackage,
+  and is a much faster alternative to `--install-lib`. It works by creating a
+  temporary `cabal.project` file, while contents are simply
+  ```
+  extra-packages: target1 target2 ...
+  ```
+  This causes `target1`... to be interpreted as simultaneously a package to be
+  downloaded from hackage, and a package to be considered local, i.e. included
+  in the "build" step and excluded from the "deps" step.
+
 # 1.0.1.0
 
 - Binary operator options can now be parsed/formatted as JSON in a more compact

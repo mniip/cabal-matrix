@@ -10,17 +10,22 @@ module Cabal.Matrix.CabalArgs
   , CabalMode(..)
   , Flavor(..)
   , renderCabalArgs
-  , environmentFilePath
+  , prepareFilesForCabal
   ) where
 
+import Control.Exception.Safe
+import Control.Monad
+import Data.Foldable
 import Data.Hashable
 import Data.List.NonEmpty (NonEmpty(..))
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.IO qualified as Text
 import GHC.Generics
 import System.FilePath
+import System.Directory
 
 
 -- | Cabal allows interrupting the build process at multiple points, which is
@@ -88,6 +93,11 @@ setCabalStep step value pcs = case step of
 data CabalMode
   = ProjectBuild -- | Assume that we're in a cabal project and run @cabal build@
     -- targeting the project's packages and their dependencies.
+  | BlankProjectBuild -- | Create a temporary cabal project containing the
+    -- targets as @extra-packages@ (meaning they are considered local packages,
+    -- not included in 'OnlyDependencies') and run @cabal build@ with that
+    -- project. This is a much faster alternative to 'InstallLib', because cabal
+    -- doesn't need to read the installed package store.
   | InstallLib -- | Use @cabal install --lib@, which doesn't require to be in a
     -- cabal project. If we are in a project, the project's packages will be
     -- sdisted first.
@@ -127,6 +137,8 @@ data CabalRawArgs = CabalRawArgs
     -- ^ @--builddir@, where build artifacts will be placed. Different
     -- flavors using the same compiler must use different 'buildDir'.
   , mode :: CabalMode
+  , projectFile :: Maybe FilePath
+    -- ^ A project file to use with @cabal build@.
   , envFile :: Maybe FilePath
     -- ^ An environment file to use with @install --lib@. The file needs to not
     -- yet exist, so that its contents don't conflict with the install plan, but
@@ -141,7 +153,11 @@ renderRawCabalArgs :: CabalRawArgs -> NonEmpty Text
 renderRawCabalArgs ca = "cabal" :| mconcat
   [ case ca.mode of
     ProjectBuild -> ["build"]
+    BlankProjectBuild -> ["build"]
     InstallLib -> ["install", "--lib"]
+  , case ca.projectFile of
+    Nothing -> []
+    Just path -> ["--project-file", Text.pack path]
   , case ca.envFile of
     Nothing -> []
     Just path -> ["--package-env", Text.pack path]
@@ -162,6 +178,7 @@ argsToRaw args@CabalArgs{..} = CabalRawArgs
   , buildDir = buildDirFor flavor
   , mode
   , envFile = environmentFilePath args
+  , projectFile = projectFilePath args
   , step
   , options = concat
     [ options
@@ -180,7 +197,25 @@ buildDirFor f = "dist-newstyle" </>
 renderCabalArgs :: CabalArgs -> NonEmpty Text
 renderCabalArgs = renderRawCabalArgs . argsToRaw
 
+projectFilePath :: CabalArgs -> Maybe FilePath
+projectFilePath CabalArgs{..} = case mode of
+  BlankProjectBuild -> Just $ buildDirFor flavor </> "cabal.project"
+  ProjectBuild -> Nothing
+  InstallLib -> Nothing
+
+projectFileContents :: CabalArgs -> Text
+projectFileContents args = "extra-packages: " <> Text.unwords args.targets
+
 environmentFilePath :: CabalArgs -> Maybe FilePath
 environmentFilePath CabalArgs{..} = case mode of
-  ProjectBuild -> Nothing
   InstallLib -> Just $ buildDirFor flavor </> "env"
+  ProjectBuild -> Nothing
+  BlankProjectBuild -> Nothing
+
+prepareFilesForCabal :: CabalArgs -> IO ()
+prepareFilesForCabal args = do
+  for_ (projectFilePath args) \projectFile -> do
+    createDirectoryIfMissing True $ takeDirectory projectFile
+    Text.writeFile projectFile $ projectFileContents args
+  for_ (environmentFilePath args) \environmentFile -> do
+    void $ try @_ @IOError $ removeFile environmentFile

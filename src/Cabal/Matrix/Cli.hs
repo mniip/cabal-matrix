@@ -184,9 +184,15 @@ runOptions = parserOptionGroup "Running Cabal:" $ RunOptions
   <*> targetsOptions
   <*> modeOption
   where
-    modeOption = flag ProjectBuild InstallLib (long "install-lib"
-      <> help "Use cabal install --lib instead of cabal build, allowing \
-        \targeting libraries directly from hackage, without a local project")
+    modeOption
+      = flag' BlankProjectBuild (long "blank-project"
+        <> help "Create a blank project for the build, with the given targets \
+          \specified as extra-packages, allowing targeting libraries directly \
+          \from hackage"  )
+      <|> flag' InstallLib (long "install-lib"
+        <> help "Use cabal install --lib instead of cabal build instead of \
+          \using a local project")
+      <|> pure ProjectBuild
     jobsOption = option auto (long "jobs" <> short 'j' <> metavar "N"
       <> help "How many instances of cabal to run concurrently")
     optionsOptions = many $ option str (long "option" <> metavar "--OPTION"
