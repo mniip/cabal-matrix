@@ -14,11 +14,15 @@ import Control.Monad.Trans.Except
 import Control.Monad.Trans.Reader
 import Control.Monad.Trans.State
 import Data.Char
+import Data.Functor
+import Data.List.NonEmpty qualified as NonEmpty
 import Data.List.Split
 import Data.Maybe
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Traversable
+import Distribution.Compat.CharParsing (sepByNonEmpty, spaces, string, try)
 import Distribution.Package
 import Distribution.Parsec
 import Distribution.Version
@@ -46,6 +50,7 @@ getSchedulerConfig RunOptions{..} = do
   cabalExecutable <- case cabalOverride of
     Just override -> pure override
     Nothing -> fromMaybe "cabal" <$> lookupEnv "CABAL"
+  userProjectFiles <- detectUserProjectFiles
   pure SchedulerConfig{..}
 
 data CliOptions
@@ -312,6 +317,14 @@ frameOptions = parserOptionGroup "Specifying configurations:"
             <> help "A single build with the provided options, for options \
               \that are order-sensitive. The provided options are appended \
               \after all other options.")
+        , Expr "--constraints" . ConstraintsExpr
+          <$> option readConstraints
+          (long "constraints" <> metavar "CONSTRAINTS"
+            <> help "Specify constraints to use in the build. A basic \
+            \constraint consists of a package name and a version range, such \
+            \as 'foo >=1.0 && <2.0'. Constraints can be AND-ed with ',' and \
+            \OR-ed with ';'. An implication constraint can be specified as \
+            \'ANTECEDENT :- CONSEQUENT'.")
         ]
       , flag' OpenParen
         (long "[" <> style (\_ -> "--[ LIST --]")
@@ -323,10 +336,10 @@ frameOptions = parserOptionGroup "Specifying configurations:"
 
 readCompilers :: ReadM [Compiler]
 readCompilers
-  = map Compiler . filter (not . null) <$> commaSeparated (strip <$> str)
+  = map Compiler . filter (not . null) <$> separatedBy "," (strip <$> str)
 
 readPrefer :: ReadM [Prefer]
-readPrefer = commaSeparated $ maybeReader \(map toLower . strip -> s) -> if
+readPrefer = separatedBy "," $ maybeReader \(map toLower . strip -> s) -> if
   | s `elem` ["newest", "newer", "new"] -> Just PreferNewest
   | s `elem` ["oldest", "older", "old"] -> Just PreferOldest
   | otherwise -> Nothing
@@ -337,7 +350,7 @@ readPackage = do
   if '=' `elem` s
   then byEquals
     (mkPackageName . strip <$> str)
-    (SomeVersions <$> commaSeparated versionOrRange)
+    (SomeVersions <$> separatedBy "," versionOrRange)
   else ((, AllVersions) . mkPackageName . strip <$> str)
   where
     versionOrRange = ReadM $ ReaderT \s -> case eitherParsec @Version s of
@@ -350,15 +363,50 @@ readPackage = do
 readCustom :: ReadM (Text, [Text])
 readCustom = byEquals
   (Text.strip <$> str)
-  (filter (not . Text.null) <$> commaSeparated (Text.strip <$> str))
+  (filter (not . Text.null) <$> separatedBy "," (Text.strip <$> str))
+
+readConstraints :: ReadM (Disjunction (Conjunction Constraint))
+readConstraints = ReadM $ ReaderT \s -> case explicitEitherParsec impl s of
+  Right constr -> pure constr
+  Left err -> throwE $ ErrorMsg $ "Expected package names followed by version \
+    \constraints, separated by \",\", \";\", and \":-\": " <> err
+  where
+    atom = (\package versions -> Constraint{..})
+      <$> (spaces *> parsec @PackageName)
+      <*> (spaces *> try (parsec @VersionRange))
+    term = sepByNonEmpty atom (spaces *> string ",")
+      <&> \as -> Conjunction $ Set.fromList $ NonEmpty.toList as
+    expr = sepByNonEmpty term (spaces *> string ";")
+      <&> \ts -> Disjunction $ Set.fromList $ NonEmpty.toList ts
+    impl = try (mkImplication <$> term <*> (spaces *> string ":-" *> expr))
+      <|> expr
+
+    mkImplication (Conjunction constrs) (Disjunction disj)
+      = Disjunction $ Set.map invertConstr constrs `Set.union` disj
+    invertConstr Constraint{ package, versions }
+      = Conjunction $ Set.singleton Constraint
+        { package
+        , versions = flip cataVersionRange versions \case
+          ThisVersionF ver -> notThisVersion ver
+          LaterVersionF ver -> orEarlierVersion ver
+          OrLaterVersionF ver -> earlierVersion ver
+          EarlierVersionF ver -> orLaterVersion ver
+          OrEarlierVersionF ver -> laterVersion ver
+          MajorBoundVersionF ver -> unionVersionRanges
+            (earlierVersion ver)
+            (orLaterVersion $ majorUpperBound ver)
+          UnionVersionRangesF vs1 vs2 -> intersectVersionRanges vs1 vs2
+          IntersectVersionRangesF vs1 vs2 -> unionVersionRanges vs1 vs2
+        }
 
 byEquals :: ReadM a -> ReadM b -> ReadM (a, b)
 byEquals (ReadM (ReaderT pk)) (ReadM (ReaderT pv)) = ReadM $ ReaderT \s -> if
   | (prefix, _:suffix) <- break (=='=') s -> (,) <$> pk prefix <*> pv suffix
   | otherwise -> throwE $ ErrorMsg "Expected key=value pair"
 
-commaSeparated :: ReadM a -> ReadM [a]
-commaSeparated (ReadM (ReaderT p)) = ReadM $ ReaderT \s -> for (splitOn "," s) p
+separatedBy :: String -> ReadM a -> ReadM [a]
+separatedBy separator (ReadM (ReaderT p))
+  = ReadM $ ReaderT \s -> for (splitOn separator s) p
 
 strip :: String -> String
 strip = Text.unpack . Text.strip . Text.pack

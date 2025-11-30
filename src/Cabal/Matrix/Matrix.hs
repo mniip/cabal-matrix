@@ -46,9 +46,8 @@ newtype Compiler = Compiler FilePath
 
 compilersMatrix :: [Compiler] -> Matrix
 compilersMatrix compilers = Rectangle.vertical "COMPILER"
-  [ ( Flavor
+  [ ( mempty
       { unorderedOptions = Set.singleton ("--with-compiler=" <> compiler)
-      , orderedOptions = []
       }
     , Just compiler
     )
@@ -60,11 +59,10 @@ data Prefer = PreferOldest | PreferNewest
 
 preferMatrix :: [Prefer] -> Matrix
 preferMatrix values = Rectangle.vertical "PREFER"
-  [ ( Flavor
+  [ ( mempty
       { unorderedOptions = if value == PreferOldest
         then Set.singleton "--prefer-oldest"
         else Set.empty
-      , orderedOptions = []
       }
     , Just case value of
       PreferOldest -> "oldest"
@@ -74,23 +72,25 @@ preferMatrix values = Rectangle.vertical "PREFER"
   ]
 
 packageVersionMatrix :: PackageName -> [Version] -> Matrix
-packageVersionMatrix (Text.pack . unPackageName -> package) versions
-  = Rectangle.vertical package
-    [ ( Flavor
-        { unorderedOptions = Set.singleton
-          $ "--constraint=" <> package <> "==" <> version
-        , orderedOptions = []
+packageVersionMatrix package versions
+  = Rectangle.vertical (Text.pack $ unPackageName package)
+    [ ( mempty
+        { constraints = Conjunction $ Set.singleton
+          $ Disjunction $ Set.singleton $ Conjunction $ Set.singleton
+          $ Constraint
+            { package
+            , versions = thisVersion version
+            }
         }
-      , Just version
+      , Just $ Text.pack $ prettyShow version
       )
-    | version <- Text.pack . prettyShow <$> versions
+    | version <- versions
     ]
 
 customUnorderedOptions :: Text -> [Text] -> Matrix
 customUnorderedOptions name options = Rectangle.vertical name
-  [ ( Flavor
+  [ ( mempty
       { unorderedOptions = Set.fromList options
-      , orderedOptions = []
       }
     , Just $ Text.unwords options
     )
@@ -98,13 +98,17 @@ customUnorderedOptions name options = Rectangle.vertical name
 
 customOrderedOptions :: Text -> [Text] -> Matrix
 customOrderedOptions name options = Rectangle.vertical name
-  [ ( Flavor
-      { unorderedOptions = Set.empty
-      , orderedOptions = options
+  [ ( mempty
+      { orderedOptions = options
       }
     , Just $ Text.unwords options
     )
   ]
+
+constraintsMatrix :: Disjunction (Conjunction Constraint) -> Matrix
+constraintsMatrix disj = Rectangle.unitRow $ mempty
+  { constraints = Conjunction $ Set.singleton disj
+  }
 
 data VersionExpr
   = AllVersions
@@ -124,6 +128,7 @@ data MatrixExpr
   | PackageVersionExpr PackageName VersionExpr
   | CustomUnorderedExpr Text [Text]
   | CustomOrderedExpr Text [Text]
+  | ConstraintsExpr (Disjunction (Conjunction Constraint))
 
 -- | Evaluating the build matrix expression may require access to the source
 -- package DB, but if it doesn't, we'd like to avoid loading it.
@@ -176,6 +181,8 @@ evalMatrixExpr = runEvalM . go
         -> EvalPure $ customUnorderedOptions name values
       CustomOrderedExpr name values
         -> EvalPure $ customOrderedOptions name values
+      ConstraintsExpr disjs
+        -> EvalPure $ constraintsMatrix disjs
 
 resolveMatrixExpr :: MatrixExpr -> IO MatrixExpr
 resolveMatrixExpr = runEvalM . go
@@ -193,3 +200,4 @@ resolveMatrixExpr = runEvalM . go
           <$> evalVersionRanges package versions
       e@(CustomUnorderedExpr _ _) -> pure e
       e@(CustomOrderedExpr _ _) -> pure e
+      e@(ConstraintsExpr _) -> pure e

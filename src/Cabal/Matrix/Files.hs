@@ -61,6 +61,23 @@ instance FromJSON VersionJSON where
         Left err2 -> fail $ unlines
           ["Expected a version or a version range: ", err1, err2]
 
+newtype ConstraintJSON = ConstraintJSON Constraint
+
+instance ToJSON ConstraintJSON where
+  toJSON (ConstraintJSON constr) = object
+    [ "package" .= unPackageName constr.package
+    , "versions" .= prettyShow constr.versions
+    ]
+
+instance FromJSON ConstraintJSON where
+  parseJSON = withObject "Constraint" \o -> do
+    package <- mkPackageName <$> o .: "package"
+    versions <- explicitParseField parseVersion o "versions"
+    pure $ ConstraintJSON Constraint{..}
+    where
+      parseVersion = withText "Version" \txt -> do
+        either fail pure $ eitherParsec @VersionRange $ Text.unpack txt
+
 newtype MatrixExprJSON = MatrixExprJSON MatrixExpr
 
 instance ToJSON MatrixExprJSON where
@@ -93,6 +110,12 @@ instance ToJSON MatrixExprJSON where
         CustomOrderedExpr key options -> object
           [ "custom_ordered" .= key
           , "options" .= toJSON options
+          ]
+        ConstraintsExpr disj -> object
+          [ "constraints" .=
+            [ [ConstraintJSON constr | constr <- Set.toList conj.unConjunction]
+            | conj <- Set.toList disj.unDisjunction
+            ]
           ]
       goTimes (TimesExpr x y) ys = goTimes x (MatrixExprJSON y : ys)
       goTimes y xs = object
@@ -147,12 +170,18 @@ instance FromJSON MatrixExprJSON where
           Just options -> pure $ Just $ CustomOrderedExpr key options
           Nothing -> fail
             "Expected \"custom_ordered\" to be accompanied by \"options\""
+      , (o .:? "constraints") <&> fmap @Maybe \disj
+        -> ConstraintsExpr $ Disjunction $ Set.fromList
+          [ Conjunction $ Set.fromList
+            [constr | ConstraintJSON constr <- conj]
+          | conj <- disj
+          ]
       ]
     case catMaybes parses of
       [x] -> pure $ MatrixExprJSON x
       _ -> fail "Expected exactly one of: \"times\", \"add\", \"subtract\", \
         \\"seq\", \"compilers\", \"prefer\", \"package\", \
-        \\"custom_unordered\", \"custom_ordered\""
+        \\"custom_unordered\", \"custom_ordered\", \"constraints\""
   parseJSON v = typeMismatch "Object or String" v
 
 writeExprFile :: FilePath -> MatrixExpr -> IO ()
@@ -167,13 +196,29 @@ newtype MatrixRowJSON = MatrixRowJSON (Flavor, Map Text Text)
 
 instance ToJSON MatrixRowJSON where
   toJSON (MatrixRowJSON (flavor, row)) = object
-    [ "ordered_options" .= flavor.orderedOptions
+    [ "constraints" .=
+      [ [ [ConstraintJSON constr | constr <- Set.toList conj.unConjunction]
+        | conj <- Set.toList disj.unDisjunction
+        ]
+      | disj <- Set.toList flavor.constraints.unConjunction
+      ]
+    , "ordered_options" .= flavor.orderedOptions
     , "unordered_options" .= flavor.unorderedOptions
     , "flavor" .= row
     ]
 
 instance FromJSON MatrixRowJSON where
   parseJSON = withObject "MatrixRow" \o -> do
+    mConstraints <- o .:? "constraints"
+    let
+      constraints = Conjunction $ Set.fromList
+        [ Disjunction $ Set.fromList
+          [ Conjunction $ Set.fromList
+            [constr | ConstraintJSON constr <- conj]
+          | conj <- disj
+          ]
+        | disj <- fromMaybe [] mConstraints
+        ]
     orderedOptions <- o .: "ordered_options"
     unorderedOptions <- o .: "unordered_options"
     flavor <- o .: "flavor"

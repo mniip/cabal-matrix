@@ -41,6 +41,7 @@ data SchedulerConfig = SchedulerConfig
   , targets :: [Text]
   , cabalExecutable :: FilePath
   , mode :: CabalMode
+  , userProjectFiles :: UserProjectFiles
   , steps :: PerCabalStep Bool
     -- ^ Which build steps to run or skip.
   }
@@ -102,6 +103,7 @@ mkCabalArgs input step flavor = CabalArgs
   { cabalExecutable = input.cabalExecutable
   , step
   , mode = input.mode
+  , userProjectFiles = input.userProjectFiles
   , options = input.options
   , targets = input.targets
   , flavor

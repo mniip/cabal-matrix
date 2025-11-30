@@ -1,4 +1,6 @@
 -- | Converting high-level build matrix concepts into @cabal@ commandlines.
+-- Some instructions cannot be passed via the command line, and instead have to
+-- be passed through a temporary @cabal.project@ file.
 module Cabal.Matrix.CabalArgs
   ( CabalArgs(..)
   , CabalStep(..)
@@ -9,20 +11,31 @@ module Cabal.Matrix.CabalArgs
   , setCabalStep
   , CabalMode(..)
   , Flavor(..)
+  , Conjunction(..)
+  , Disjunction(..)
+  , Constraint(..)
   , renderCabalArgs
+  , UserProjectFiles
+  , detectUserProjectFiles
   , prepareFilesForCabal
   ) where
 
 import Control.Exception.Safe
 import Control.Monad
+import Data.Either
 import Data.Foldable
+import Data.Functor
 import Data.Hashable
 import Data.List.NonEmpty (NonEmpty(..))
+import Data.List.NonEmpty qualified as NonEmpty
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.IO qualified as Text
+import Distribution.Package
+import Distribution.Pretty
+import Distribution.Version
 import GHC.Generics
 import System.FilePath
 import System.Directory
@@ -101,29 +114,56 @@ data CabalMode
   | InstallLib -- | Use @cabal install --lib@, which doesn't require to be in a
     -- cabal project. If we are in a project, the project's packages will be
     -- sdisted first.
+  deriving stock (Eq)
+
+data Constraint = Constraint
+  { package :: PackageName
+  , versions :: VersionRange
+  } deriving stock (Eq, Ord, Show, Generic)
+
+instance Hashable Constraint where
+  hashWithSalt salt constr = salt
+    `hashWithSalt` unPackageName constr.package
+    `hashWithSalt` prettyShow constr.versions
+
+-- | All of these must be satisfied.
+newtype Conjunction a = Conjunction { unConjunction :: Set a }
+  deriving newtype (Eq, Ord, Hashable)
+  deriving stock (Show)
+
+-- | Any of these must be satisfied. To specify a disjunction of cabal
+-- constraints we have to express them as cabal flags on a fake package.
+newtype Disjunction a = Disjunction { unDisjunction :: Set a }
+  deriving newtype (Eq, Ord, Hashable)
+  deriving stock (Show)
 
 -- | Options defining what cell in the build matrix we're in.
 data Flavor = Flavor
-  { unorderedOptions :: Set Text
+  { constraints :: Conjunction (Disjunction (Conjunction Constraint))
+  , unorderedOptions :: Set Text
   , orderedOptions :: [Text]
   } deriving stock (Eq, Show, Generic)
     deriving anyclass (Hashable)
 
 instance Semigroup Flavor where
   f1 <> f2 = Flavor
-    { unorderedOptions = Set.union f1.unorderedOptions f2.unorderedOptions
+    { constraints = Conjunction
+      $ Set.union f1.constraints.unConjunction f2.constraints.unConjunction
+    , unorderedOptions = Set.union f1.unorderedOptions f2.unorderedOptions
     , orderedOptions = f1.orderedOptions ++ f2.orderedOptions
     }
 
 instance Monoid Flavor where
   mempty = Flavor
-    { unorderedOptions = Set.empty
+    { constraints = Conjunction Set.empty
+    , unorderedOptions = Set.empty
     , orderedOptions = []
     }
 
 -- | A single invocation of @cabal@.
 data CabalArgs = CabalArgs
   { cabalExecutable :: FilePath
+  , userProjectFiles :: UserProjectFiles
   , mode :: CabalMode
   , step :: CabalStep
   , options :: [Text]
@@ -178,15 +218,18 @@ argsToRaw args@CabalArgs{..} = CabalRawArgs
   , buildDir = buildDirFor flavor
   , mode
   , envFile = environmentFilePath args
-  , projectFile = projectFilePath args
+  , projectFile = fst . (.projectFile) <$> mProjectFile
   , step
   , options = concat
     [ options
     , Set.toList flavor.unorderedOptions
+    , projectArgs
     , flavor.orderedOptions
     ]
   , targets
   }
+  where
+    (projectArgs, mProjectFile) = projectOrArgs args
 
 -- TODO: there probably needs to be some mechanism to clean up these at some
 -- point.
@@ -197,14 +240,102 @@ buildDirFor f = "dist-newstyle" </>
 renderCabalArgs :: CabalArgs -> NonEmpty Text
 renderCabalArgs = renderRawCabalArgs . argsToRaw
 
-projectFilePath :: CabalArgs -> Maybe FilePath
-projectFilePath CabalArgs{..} = case mode of
-  BlankProjectBuild -> Just $ buildDirFor flavor </> "cabal.project"
-  ProjectBuild -> Nothing
-  InstallLib -> Nothing
+data ProjectData = ProjectData
+  { projectFile :: (FilePath, Text)
+  , auxCabalFile :: Maybe (FilePath, Text)
+  }
 
-projectFileContents :: CabalArgs -> Text
-projectFileContents args = "extra-packages: " <> Text.unwords args.targets
+-- | Do we need a project file, or will some CLI args suffice?
+projectOrArgs :: CabalArgs -> ([Text], Maybe ProjectData)
+projectOrArgs args =
+  ( cliConstraints
+  , guard (args.mode == BlankProjectBuild || needAuxCabalFile)
+    >> Just ProjectData
+      { projectFile = (projectFile, projectFileContents)
+      , auxCabalFile = guard needAuxCabalFile >> Just
+        ( auxCabalFile
+        , auxCabalFileContents
+        )
+      }
+  )
+  where
+    (Set.unions -> simpleConstraints, complexConstraints) = partitionEithers
+      $ Set.toList args.flavor.constraints.unConjunction <&> \disj
+        -> case NonEmpty.nonEmpty $ Set.toList disj.unDisjunction of
+          Nothing -> Left $ Set.singleton Constraint
+            { package = "base"
+            , versions = noVersion
+            } -- An empty disjunction is an unsatisfiable constraint.
+          Just (conj :| []) -> Left conj.unConjunction
+          Just conjs -> Right conjs
+
+    cliConstraints =
+      [ "--constraint=" <> Text.pack (unPackageName package)
+        <> Text.pack (prettyShow versions)
+      | Constraint{ package, versions } <- Set.toList simpleConstraints
+      ]
+
+    needAuxCabalFile = not $ null complexConstraints
+
+    projectFile = buildDirFor args.flavor </> "cabal.project"
+    projectFileContents = Text.unlines $
+      [ "import: " <> Text.pack userProjectFile
+      | args.mode /= BlankProjectBuild
+      , userProjectFile <- args.userProjectFiles.unUserProjectFiles
+      ] <>
+      [ "extra-packages: " <> Text.intercalate ", " args.targets
+      | args.mode == BlankProjectBuild
+      ] <>
+      [ "packages: " <> Text.pack auxCabalFile
+      | needAuxCabalFile
+      ]
+
+    auxCabalFile = buildDirFor args.flavor
+      </> "cabal-matrix-constraints-fake-package.cabal"
+    (flags, buildDepends) = complexConstraintsToFlags complexConstraints
+    auxCabalFileContents = Text.unlines $
+      [ "cabal-version: >=1.8"
+      , "name: cabal-matrix-constraints-fake-package"
+      , "version: 0"
+      , "build-type: Simple"
+      ] <>
+      [ "flag " <> flag <> " {}"
+      | flag <- flags
+      ] <>
+      [ "library"
+      ] <>
+      buildDepends
+
+complexConstraintsToFlags
+  :: [NonEmpty (Conjunction Constraint)] -> ([Text], [Text])
+complexConstraintsToFlags complexConstraints =
+  ( [ flag i j
+    | (i, conjs) <- zip [0..] complexConstraints
+    , j <- [1 .. NonEmpty.length conjs - 1]
+    ]
+  , concat $ zipWith (goDisj 1 1) [0..] complexConstraints
+  )
+  where
+    goDisj !indent !_j !_i (conj :| []) = goConj indent conj
+    goDisj indent j i (conj :| conj' : conjs) =
+      [ Text.replicate indent "  " <> "if flag(" <> flag i j <> ") {"
+      ] <> goConj (indent + 1) conj <>
+      [ Text.replicate indent "  " <> "} else {"
+      ] <> goDisj (indent + 1) (j + 1) i (conj' :| conjs) <>
+      [ Text.replicate indent "  " <> "}"
+      ]
+
+    goConj !indent (Conjunction constrs) =
+      [ Text.replicate indent "  " <> "build-depends:"
+        <> Text.intercalate ", "
+        [ Text.pack $ prettyShow constr.package <> prettyShow constr.versions
+        | constr <- Set.toList constrs
+        ]
+      ]
+
+    flag :: Int -> Int -> Text
+    flag i j = "cabal-matrix-disjunction-"
+      <> Text.pack (show i) <> "-" <> Text.pack (show j)
 
 environmentFilePath :: CabalArgs -> Maybe FilePath
 environmentFilePath CabalArgs{..} = case mode of
@@ -212,10 +343,28 @@ environmentFilePath CabalArgs{..} = case mode of
   ProjectBuild -> Nothing
   BlankProjectBuild -> Nothing
 
+newtype UserProjectFiles = UserProjectFiles { unUserProjectFiles :: [FilePath] }
+
+detectUserProjectFiles :: IO UserProjectFiles
+detectUserProjectFiles = UserProjectFiles <$> (getCurrentDirectory >>= go)
+  where
+    go dir = doesFileExist projectFile >>= \case
+      False -> if takeDirectory dir /= dir
+        then go $ takeDirectory dir
+        else pure []
+      True -> (projectFile:) <$> filterM doesFileExist [localFile, freezeFile]
+      where
+        projectFile = dir </> "cabal.project"
+        localFile = dir </> "cabal.project.local"
+        freezeFile = dir </> "cabal.project.freeze"
+
 prepareFilesForCabal :: CabalArgs -> IO ()
 prepareFilesForCabal args = do
-  for_ (projectFilePath args) \projectFile -> do
-    createDirectoryIfMissing True $ takeDirectory projectFile
-    Text.writeFile projectFile $ projectFileContents args
+  for_ (snd $ projectOrArgs args) \project -> do
+    createDirectoryIfMissing True $ takeDirectory $ fst project.projectFile
+    uncurry Text.writeFile project.projectFile
+    for_ project.auxCabalFile \auxCabalFile -> do
+      createDirectoryIfMissing True $ takeDirectory $ fst auxCabalFile
+      uncurry Text.writeFile auxCabalFile
   for_ (environmentFilePath args) \environmentFile -> do
     void $ try @_ @IOError $ removeFile environmentFile

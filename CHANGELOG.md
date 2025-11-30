@@ -9,6 +9,15 @@
   This causes `target1`... to be interpreted as simultaneously a package to be
   downloaded from hackage, and a package to be considered local, i.e. included
   in the "build" step and excluded from the "deps" step.
+- `--constraints` is a new option for specifying build constraints. It allows
+  specifying one or more constraints on package versions with
+  `--constraints "foo >1 , bar <2"`. It also allows specifying implication
+  constraints such as `--constraints "foo >1 :- bar <2"` e.g. as if all versions
+  `foo >1` were revised to include a `bar <2` constraint. More generally it
+  allows specifying disjunction constraints separated with `;`, such as
+  `--constraints "foo >1 ; bar <2 ; baz ==3"`. Disjunction/implication
+  constraints are translated to constraints guarded behind automatic cabal
+  flags.
 
 # 1.0.1.0
 
