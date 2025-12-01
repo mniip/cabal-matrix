@@ -316,8 +316,8 @@ output to find out in more detail.
 If you have a hackage revision that you would like to apply, you can see how it
 would affect the build plans by using a `--constraints` option with an
 implication constraint. If as in the above example, we would like to revise
-`tar >=0.6.4.0 && <=0.7.0.0` to include tighten the bound on `directory` to
-`>=1.3.8`, we can do so with:
+`tar >=0.6.4.0 && <=0.7.0.0` to tighten the bound on `directory` to `>=1.3.8`,
+we can do so with:
 ```sh
 cabal-matrix -j1 --blank-project tar \
   --option --index-state=2025-10-01T00:00:00Z \
