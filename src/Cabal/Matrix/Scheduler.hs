@@ -126,21 +126,23 @@ startScheduler input flavors cb = do
     waitForNext :: IO ()
     waitForNext = do
       waitQSem sem
-      done <- modifyMVar stateVar \state -> case state.queue of
+      (done, signal) <- modifyMVar stateVar \state -> case state.queue of
         [] -> do
           doneWithFlavor
-          pure (state, True)
+          pure (state, (True, pure ()))
         flavorIndex:queue' -> do
-          mProcess <- startSteps flavorIndex
+          result <- startSteps flavorIndex
             (filter (indexCabalStep input.steps) [minBound..maxBound])
           pure
             ( state
               { processes
-                = Map.alter (\_ -> mProcess) flavorIndex state.processes
+                = Map.alter (\_ -> fst <$> result) flavorIndex state.processes
               , queue = queue'
               }
-            , False
+            , (False, maybe (pure ()) snd result)
             )
+
+      signal -- possibly send the 'OnStepStarted' event
 
       if done
       then waitForDone
@@ -149,17 +151,24 @@ startScheduler input flavors cb = do
     doneWithFlavor :: IO ()
     doneWithFlavor = signalQSem sem
 
-    startSteps :: FlavorIndex -> [CabalStep] -> IO (Maybe ProcessHandle)
+    startSteps
+      :: FlavorIndex -> [CabalStep] -> IO (Maybe (ProcessHandle, IO ()))
     startSteps flavorIndex = \case
       [] -> Nothing <$ doneWithFlavor
       step:nextSteps -> Just <$> do
         stdoutClosed <- newEmptyMVar
         stderrClosed <- newEmptyMVar
-        cb OnStepStarted { flavorIndex, step }
+        processStarted <- newEmptyMVar
         let args = mkCabalArgs input step (indexArray flavors flavorIndex)
         prepareFilesForCabal args
-        startProcess (renderCabalArgs args)
-          (reactStep flavorIndex step nextSteps stdoutClosed stderrClosed)
+        handle <- startProcess (renderCabalArgs args)
+          (reactStep flavorIndex step nextSteps stdoutClosed stderrClosed processStarted)
+        -- We cannot send 'OnStepStarted' here because we are holding the state
+        -- MVar, and a deadlock is possible. Instead we defer sending it until
+        -- the MVar is released, and synchronize 'OnOutput' with this event.
+        pure $ (handle,) do
+          cb OnStepStarted { flavorIndex, step }
+          putMVar processStarted ()
 
     reactStep
       :: FlavorIndex
@@ -167,42 +176,54 @@ startScheduler input flavors cb = do
       -> [CabalStep]
       -> MVar ()
       -> MVar ()
+      -> MVar ()
       -> ProcessMessage
       -> IO ()
-    reactStep flavorIndex step nextSteps stdoutClosed stderrClosed = \case
-      OnProcessOutput channel output -> cb OnOutput
-        { flavorIndex
-        , step
-        , channel
-        , output
-        }
-      OnChannelClosed Stdout -> putMVar stdoutClosed ()
-      OnChannelClosed Stderr -> putMVar stderrClosed ()
-      OnProcessExit exitCode -> do
-        -- Synchronize OnStepFinished to be sequenced after OnOutput.
-        -- Perhaps ProcessRunner should do this.
-        takeMVar stdoutClosed
-        takeMVar stderrClosed
-        cb OnStepFinished { flavorIndex, step, exitCode }
-        modifyMVar_ stateVar \state -> case exitCode of
-          ExitSuccess
-            -- It's possible that an interrupt signal has been received after
-            -- the process has already exited (successfully), but before we got
-            -- the 'OnProcessExit' message. So we must check this flag to see if
-            -- we shouldn't start subsequent steps.
-            | flavorIndex `Set.notMember` state.stopRequested
-            -> do
-              mProcess <- startSteps flavorIndex nextSteps
-              pure state
-                { processes
-                  = Map.alter (\_ -> mProcess) flavorIndex state.processes
-                }
-          _ -> do
-            doneWithFlavor
-            pure state
-              { processes = Map.delete flavorIndex state.processes
-              , stopRequested = Set.delete flavorIndex state.stopRequested
-              }
+    reactStep flavorIndex step nextSteps stdoutClosed stderrClosed
+      processStarted = \case
+        OnProcessOutput channel output -> do
+          -- Synchronize OnOutput to be sent after OnStepStarted
+          readMVar processStarted
+          cb OnOutput
+            { flavorIndex
+            , step
+            , channel
+            , output
+            }
+        OnChannelClosed Stdout -> putMVar stdoutClosed ()
+        OnChannelClosed Stderr -> putMVar stderrClosed ()
+        OnProcessExit exitCode -> do
+          -- Synchronize OnStepFinished to be sequenced after OnOutput.
+          -- Perhaps ProcessRunner should do this.
+          takeMVar stdoutClosed
+          takeMVar stderrClosed
+          cb OnStepFinished { flavorIndex, step, exitCode }
+          signal <- modifyMVar stateVar \state -> case exitCode of
+            ExitSuccess
+              -- It's possible that an interrupt signal has been received after
+              -- the process has already exited (successfully), but before we got
+              -- the 'OnProcessExit' message. So we must check this flag to see if
+              -- we shouldn't start subsequent steps.
+              | flavorIndex `Set.notMember` state.stopRequested
+              -> do
+                result <- startSteps flavorIndex nextSteps
+                pure
+                  ( state
+                    { processes = Map.alter
+                      (\_ -> fst <$> result) flavorIndex state.processes
+                    }
+                  , maybe (pure ()) snd result
+                  )
+            _ -> do
+              doneWithFlavor
+              pure
+                ( state
+                  { processes = Map.delete flavorIndex state.processes
+                  , stopRequested = Set.delete flavorIndex state.stopRequested
+                  }
+                , pure ()
+                )
+          signal -- possibly send the 'OnStepStarted' event
 
     waitForDone :: IO ()
     waitForDone = do
