@@ -1,4 +1,4 @@
-# Next
+# 1.0.2.0
 
 - `--blank-project` is a new mode for building packages directly from hackage,
   and is a much faster alternative to `--install-lib`. It works by creating a
