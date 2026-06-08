@@ -139,13 +139,15 @@ appHandleSchedulerMessage ev ast = case ev of
   OnDone -> ast
 
 appHandleEvent
-  :: TuiMatrix
+  :: DisplayRegion
+  -> TuiMatrix
   -> PerCabalStep Bool
   -> Maybe SchedulerHandle
   -> AppEvent
   -> AppState
   -> IO (Maybe AppState)
-appHandleEvent matrix enabledSteps mScheduler aev ast = case aev of
+appHandleEvent (width, height) matrix enabledSteps mScheduler aev ast
+  = case aev of
   AppTimerEvent ev -> pure $ Just ast
     { flavorStates = IntMap.map (flavorHandleTimerEvent ev) ast.flavorStates }
   VtyEvent (EvKey (isExitKey -> True) _)
@@ -157,6 +159,7 @@ appHandleEvent matrix enabledSteps mScheduler aev ast = case aev of
     -> pure Nothing
   VtyEvent ev
     | Just (flavorIndex, os) <- ast.openedCell
+    , Just fs <- IntMap.lookup flavorIndex ast.flavorStates
     -> case ev of
       EvKey (KChar 'c') (elem MCtrl -> True) -> do
         for_ mScheduler $ flip signalScheduler InterruptFlavor { flavorIndex }
@@ -171,7 +174,10 @@ appHandleEvent matrix enabledSteps mScheduler aev ast = case aev of
         for_ mScheduler $ flip signalScheduler RestartFlavor { flavorIndex }
         pure $ Just ast
       _ -> pure $ Just ast
-        { openedCell = Just (flavorIndex, outputHandleEvent enabledSteps ev os)
+        { openedCell = Just
+          ( flavorIndex
+          , outputHandleEvent (width, height - 1) enabledSteps ev fs os
+          )
         }
     | Just headerEditor <- ast.headerEditor
     , (headerEditor', headers')
@@ -278,13 +284,14 @@ tuiMainLoop tuiMatrix ast0 steps queue mScheduler = do
       bounds <- vty.outputIface.displayBounds
       let (!ast', !image) = appWidget bounds tuiMatrix steps ast
       vty.update $ picForImage image
-      go ast'
+      go bounds ast'
 
-    go !ast = atomically (readTBQueue queue) >>= \case
-      Left msg -> go (appHandleSchedulerMessage msg ast)
-      Right ev -> appHandleEvent tuiMatrix steps mScheduler ev ast >>= \case
-        Just ast' -> goDisplay ast'
-        Nothing -> vty.shutdown
+    go bounds !ast = atomically (readTBQueue queue) >>= \case
+      Left msg -> go bounds (appHandleSchedulerMessage msg ast)
+      Right ev -> appHandleEvent bounds tuiMatrix steps mScheduler ev ast
+        >>= \case
+          Just ast' -> goDisplay ast'
+          Nothing -> vty.shutdown
 
   goDisplay ast0
 

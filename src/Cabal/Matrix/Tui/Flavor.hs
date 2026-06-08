@@ -20,6 +20,7 @@ import Cabal.Matrix.ProcessRunner
 import Cabal.Matrix.Record
 import Cabal.Matrix.Scheduler
 import Cabal.Matrix.Tui.Common
+import Control.Monad
 import Data.Bifunctor
 import Data.ByteString (ByteString)
 import Data.Function
@@ -67,44 +68,73 @@ statusColor ss = case ss.exit of
   Just ExitSuccess -> brightGreen
   Just (ExitFailure _) -> brightRed
 
-stepOutputWidget :: DisplayRegion -> StepState -> Image
-stepOutputWidget (width, height) ss = header <-> output
+data ComputedHeader = ComputedHeader
+  { height :: Int
+  , image :: Image
+  }
+
+computeHeader :: DisplayRegion -> StepState -> ComputedHeader
+computeHeader (width, _height) ss = ComputedHeader
+  { image = vertCat
+    [ horizCat $ padToCommonHeight
+      [ ( headerBg
+        , ' '
+        , text' (headerBg `withForeColor` brightYellow) commandText
+        )
+      , ( headerBg
+        , ' '
+        , vertCat
+          [ resizeWidthFill headerBg ' ' (width - safeWctwidth commandText)
+            $ text' headerBg line
+          | line <- wrappedCommandText 
+          ]
+        )
+      ]
+    , resizeWidthFill headerBg ' ' width
+      $ text' (headerBg `withForeColor` brightYellow) "Status: " <|>
+        case ss.exit of
+          _ | not ss.started -> text' status "Pending"
+          Nothing -> text' status "Running"
+          Just ExitSuccess -> text' status "Completed successfully"
+          Just (ExitFailure code) -> text' status
+            $ "Failed with exit code " <> Text.pack (show code)
+    , charFill (headerBg `withForeColor` brightYellow) borderEW width 1
+    ]
+  , height = length wrappedCommandText + 1 + 1
+    -- ^ should be equal to @imageHeight image@
+  }
   where
     commandText = "Command: "
     headerBg = defAttr `withBackColor` blue
+    wrappedCommandText = wrap (width - safeWctwidth commandText)
+      $ Text.unwords $ NonEmpty.toList ss.cmdline
     status = headerBg `withForeColor` statusColor ss
-    header = vertCat
-      [ horizCat $ padToCommonHeight
-        [ ( headerBg
-          , ' '
-          , text' (headerBg `withForeColor` brightYellow) commandText
-          )
-        , ( headerBg
-          , ' '
-          , vertCat
-            [ resizeWidthFill headerBg ' ' (width - safeWctwidth commandText)
-              $ text' headerBg line
-            | line <- wrap (width - safeWctwidth commandText)
-              $ Text.unwords $ NonEmpty.toList ss.cmdline
-            ]
-          )
-        ]
-      , resizeWidthFill headerBg ' ' width
-        $ text' (headerBg `withForeColor` brightYellow) "Status: " <|>
-          case ss.exit of
-            _ | not ss.started -> text' status "Pending"
-            Nothing -> text' status "Running"
-            Just ExitSuccess -> text' status "Completed successfully"
-            Just (ExitFailure code) -> text' status
-              $ "Failed with exit code " <> Text.pack (show code)
-      , charFill (headerBg `withForeColor` brightYellow) borderEW width 1
-      ]
-    output = resize width (height - imageHeight header) $ vertCat
-      [ text' defAttr line
-      | line <- reverse . take (height - imageHeight header) . reverse
-        $ wrap width
-        $ Text.concat $ Text.decodeUtf8Lenient . snd <$> reverse ss.revOutput
-      ]
+
+data ComputedOutput = ComputedOutput
+  { wantedHeight :: Int
+  , availableHeight :: Int
+  , image :: Image
+  }
+
+computeOutput
+  :: DisplayRegion
+  -> ScrollState
+  -> StepState
+  -> ComputedOutput
+computeOutput (width, height) mScroll ss = ComputedOutput
+  { wantedHeight = length wrappedOutputLines
+  , availableHeight = height
+  , image = resize width height $ vertCat
+    [ text' defAttr line
+    | line <- wrappedOutputLines
+      & case mScroll of
+        Nothing -> reverse . take height . reverse
+        Just scroll -> take height . drop scroll
+    ]
+  }
+  where
+    wrappedOutputLines = wrap width
+      $ Text.concat $ Text.decodeUtf8Lenient . snd <$> reverse ss.revOutput
 
 data TimerEvent = TimerEvent
 
@@ -149,8 +179,13 @@ flavorHandleTimerEvent :: TimerEvent -> FlavorState -> FlavorState
 flavorHandleTimerEvent ev fs
   = tabulateCabalStep' \step -> stepHandleTimerEvent ev $ indexCabalStep fs step
 
-newtype OutputState = OutputState
+type ScrollState = Maybe Int
+  -- ^ Nothing = scrolled to the bottom. Otherwise, number of word-wrapped
+  -- lines to hide from the top.
+
+data OutputState = OutputState
   { selectedStep :: CabalStep
+  , scrollState :: ScrollState
   }
 
 initOutputState :: FlavorState -> OutputState
@@ -159,11 +194,26 @@ initOutputState fs = OutputState
     (\step -> indexCabalStep fs step
       & \ss -> ss.started && ss.exit /= Just ExitSuccess)
     [minBound..maxBound]
+  , scrollState = Nothing
   }
 
-outputWidget
-  :: DisplayRegion -> PerCabalStep Bool -> FlavorState -> OutputState -> Image
-outputWidget (width, height) enabledSteps fs os = tabSwitcher <-> output
+data ComputedWidget = ComputedWidget  
+  { wantedOutputHeight :: Int
+  , availableOutputHeight :: Int
+  , image :: Image
+  }
+
+computeOutputWidget
+  :: DisplayRegion
+  -> PerCabalStep Bool
+  -> FlavorState
+  -> OutputState
+  -> ComputedWidget
+computeOutputWidget (width, height) enabledSteps fs os = ComputedWidget
+  { wantedOutputHeight = output.wantedHeight
+  , availableOutputHeight = output.availableHeight
+  , image = tabSwitcher <-> header.image <-> output.image
+  }
   where
     stepName = \case
       DryRun -> "Planning"
@@ -175,22 +225,36 @@ outputWidget (width, height) enabledSteps fs os = tabSwitcher <-> output
         (if step == os.selectedStep
           then defAttr `withBackColor` blue
           else defAttr `withBackColor` brightBlack)
-        (if ss.started && isNothing ss.exit
-          then stepName step <> " " <> outputSpinner ss
+        (if ss'.started && isNothing ss'.exit
+          then stepName step <> " " <> outputSpinner ss'
           else stepName step)
       | step <- [minBound..maxBound]
       , indexCabalStep enabledSteps step || step == os.selectedStep
-      , let ss = indexCabalStep fs step
+      , let ss' = indexCabalStep fs step
       ]
-    output = stepOutputWidget (width, height - imageHeight tabSwitcher)
-      (indexCabalStep fs os.selectedStep)
+    tabSwitcherHeight = 1 -- should be equal to @imageHeight tabSwitcher@
+
+    ss = indexCabalStep fs os.selectedStep
+    header = computeHeader (width, height - tabSwitcherHeight) ss
+    output = computeOutput (width, height - tabSwitcherHeight - header.height)
+      os.scrollState ss
+
+outputWidget
+  :: DisplayRegion -> PerCabalStep Bool -> FlavorState -> OutputState -> Image
+outputWidget displayRegion enabledSteps fs os
+  = (computeOutputWidget displayRegion enabledSteps fs os).image
 
 outputSpinner :: StepState -> Text
 outputSpinner ss = Text.singleton $ "|/-\\" !! (ss.outputCount `mod` 4)
 
 outputHandleEvent
-  :: PerCabalStep Bool -> Event -> OutputState -> OutputState
-outputHandleEvent enabledSteps ev os = case ev of
+  :: DisplayRegion
+  -> PerCabalStep Bool
+  -> Event
+  -> FlavorState
+  -> OutputState
+  -> OutputState
+outputHandleEvent displayRegion enabledSteps ev fs os = case ev of
   -- Make sure to do something sensible if all steps are disabled
   EvKey KLeft _ -> os
     { selectedStep = fromMaybe os.selectedStep $ listToMaybe
@@ -199,6 +263,7 @@ outputHandleEvent enabledSteps ev os = case ev of
       , indexCabalStep enabledSteps step
       , step < os.selectedStep
       ]
+    , scrollState = Nothing
     }
   EvKey KRight _ -> os
     { selectedStep = fromMaybe os.selectedStep $ listToMaybe
@@ -207,8 +272,30 @@ outputHandleEvent enabledSteps ev os = case ev of
       , indexCabalStep enabledSteps step
       , step > os.selectedStep
       ]
+    , scrollState = Nothing
+    }
+  EvKey KUp _ -> os
+    { scrollState = performScroll (-1)
+    }
+  EvKey KDown _ -> os
+    { scrollState = performScroll 1
+    }
+  EvKey KPageUp _ -> os
+    { scrollState = performScroll (-output.availableOutputHeight)
+    }
+  EvKey KPageDown _ -> os
+    { scrollState = performScroll output.availableOutputHeight
     }
   _ -> os
+  where
+    output = computeOutputWidget displayRegion enabledSteps fs os
+    performScroll by
+      = mfilter (<= output.wantedOutputHeight - output.availableOutputHeight)
+      $ Just
+      $ max 0
+      $ (+ by)
+      $ fromMaybe (output.wantedOutputHeight - output.availableOutputHeight)
+      $ os.scrollState
 
 outputKeybinds :: [(Text, Text)]
 outputKeybinds =
