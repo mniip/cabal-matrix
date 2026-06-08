@@ -1,3 +1,7 @@
+# 1.0.3.0
+
+- When looking at an individual build step's output, the text can now be scrolled.
+
 # 1.0.2.0
 
 - `--blank-project` is a new mode for building packages directly from hackage,
